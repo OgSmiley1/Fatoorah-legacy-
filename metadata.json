@@ -1,0 +1,7 @@
+{
+  "name": "Smiley Wizard: Merchant Hunter",
+  "description": "Elite merchant intelligence engine for GCC e-commerce. Discover high-potential leads, analyze revenue leakage, and command the hunt via Telegram remote control.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}

@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+Arabic:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --font-arabic: "Noto Sans Arabic", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-slate-950 text-slate-100 antialiased;
+    font-family: var(--font-sans);
+  }
+}
+
+.mission-control-card {
+  @apply bg-slate-900 border border-slate-800 rounded-2xl shadow-xl transition-all duration-200;
+}
+
+.mission-control-input {
+  @apply bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm focus:ring-2 focus:ring-blue-500/50 outline-none transition-all text-slate-100;
+}
+
+.mission-control-button {
+  @apply px-4 py-2.5 rounded-xl font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.mission-control-button-primary {
+  @apply bg-blue-600 text-white hover:bg-blue-700 shadow-lg shadow-blue-900/20;
+}
+
+.mission-control-button-secondary {
+  @apply bg-slate-800 text-slate-100 hover:bg-slate-700 border border-slate-700;
+}
+
+.mission-control-label {
+  @apply block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5;
+}
+
+.font-arabic {
+  font-family: var(--font-arabic);
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-slate-950;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-800 rounded-full hover:bg-slate-700;
+}
