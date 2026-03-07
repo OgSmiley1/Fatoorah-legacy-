@@ -1,52 +1,24 @@
 export type RiskCategory = 'LOW' | 'MEDIUM' | 'HIGH';
-export type ValidationStatus = 'VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
-export type ExclusionStatus = 'ACTIVE' | 'EXCLUDED' | 'BLACKLISTED';
-
-export interface ContactValidation {
-  status: ValidationStatus;
-  sources: string[];
-  notes?: string;
-}
-
-export interface RiskAssessment {
-  score: number;
-  category: RiskCategory;
-  emoji: string;
-  color: string;
-  factors: string[];
-}
-
-export interface RevenueLeakage {
-  currentMethods: string[];
-  missingMethods: string[];
-  estimatedMonthlyLoss: number;
-  lostCustomersPercentage: number;
-  solution: string;
-}
-
-export interface KYCPreFlight {
-  status: 'GREEN' | 'RED';
-  missingItems: string[];
-  correctionAdvice: string;
-}
+export type LeadStatus = 'NEW' | 'CONTACTED' | 'FOLLOW_UP' | 'INTERESTED' | 'MEETING' | 'QUALIFIED' | 'NOT_QUALIFIED' | 'REJECTED' | 'ONBOARDED' | 'ARCHIVED';
+export type ContactConfidence = 'VERIFIED' | 'LIKELY' | 'WEAK' | 'MISSING';
 
 export interface EvidenceSource {
-  type: 'google_maps' | 'google_search' | 'official_registry' | 'other';
+  type: string;
   title: string;
   uri: string;
 }
 
 export interface Merchant {
   id: string;
-  merchantHash: string;
-  mapsPlaceId?: string;
-  evidence: EvidenceSource[];
-  businessName: string;
+  business_name: string;
   platform: string;
   url: string;
-  instagramHandle?: string;
+  maps_place_id?: string;
+  instagram_handle?: string;
+  tiktok_handle?: string;
+  telegram_handle?: string;
   category: string;
-  subCategory?: string;
+  sub_category?: string;
   followers: number;
   bio: string;
   email: string;
@@ -54,41 +26,60 @@ export interface Merchant {
   whatsapp: string;
   website: string;
   location: string;
-  lastActive: string;
-  isCOD: boolean;
-  paymentMethods: string[];
-  contactValidation: ContactValidation;
-  risk: RiskAssessment;
-  revenue: {
-    monthly: number;
-    annual: number;
-  };
-  pricing: {
-    setupFee: number;
-    transactionRate: string;
-    settlementCycle: string;
-  };
-  roi: {
-    feeSavings: number;
-    bnplUplift: number;
-    cashFlowGain: number;
-    totalMonthlyGain: number;
-    annualImpact: number;
-  };
-  leakage: RevenueLeakage;
-  scripts: {
-    arabic: string;
-    english: string;
-    whatsapp: string;
-    instagram: string;
-  };
-  kyc: KYCPreFlight;
-  otherProfiles: { platform: string; url: string }[];
-  registrationInfo?: string;
-  tradeLicense?: string;
-  foundDate: string;
-  searchSessionId: string;
-  analyzedAt: string;
+  country?: string;
+  city?: string;
+  last_active: string;
+  is_cod: number;
+  payment_methods: string; // JSON array
+  other_profiles: string; // JSON array
+  registration_info?: string;
+  trade_license?: string;
+
+  // Scoring
+  risk_score: number;
+  risk_category: string;
+  risk_factors: string; // JSON array
+  contact_score: number;
+  contact_best_route: string;
+  phone_confidence: string;
+  whatsapp_confidence: string;
+  email_confidence: string;
+  website_confidence: string;
+  social_confidence: string;
+  fit_score: number;
+  fit_reason: string;
+
+  // Financial
+  revenue_monthly: number;
+  revenue_annual: number;
+  setup_fee: number;
+  transaction_rate: string;
+  settlement_cycle: string;
+  leakage_monthly_loss: number;
+  leakage_missing_methods: string; // JSON array
+
+  // Lifecycle
+  status: LeadStatus;
+  notes?: string;
+  follow_up_date?: string;
+  first_contact_date?: string;
+  last_contact_date?: string;
+  contact_outcome?: string;
+
+  // Metadata
+  discovery_run_id?: string;
+  search_session_id?: string;
+  first_found_date: string;
+  last_validated_date?: string;
+  scripts_arabic?: string;
+  scripts_english?: string;
+  scripts_whatsapp?: string;
+  scripts_instagram?: string;
+  created_at?: string;
+  updated_at?: string;
+
+  // Evidence (joined from API)
+  evidence?: EvidenceSource[];
 }
 
 export interface SearchParams {
@@ -109,6 +100,15 @@ export interface SearchParams {
   maxResults: number;
 }
 
+export interface SearchResult {
+  searchRunId: string;
+  merchants: Merchant[];
+  totalCandidates: number;
+  duplicatesRemoved: number;
+  dedupReasons: Record<string, number>;
+  errors: string[];
+}
+
 export interface SearchHistory {
   id: string;
   sessionId: string;
@@ -117,4 +117,12 @@ export interface SearchHistory {
   category: string;
   resultsCount: number;
   date: string;
+}
+
+export interface DashboardStats {
+  total: number;
+  byStatus: Record<string, number>;
+  avgFitScore: number;
+  avgContactScore: number;
+  newThisWeek: number;
 }

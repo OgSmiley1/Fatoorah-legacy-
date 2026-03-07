@@ -1,9 +1,8 @@
 import React from 'react';
-import { 
-  Search, MapPin, Filter, Loader2, Download, Save, Shield, 
+import {
+  Search, MapPin, Filter, Loader2, Download, Save, Shield,
   History, Trash2, LayoutGrid, List, ChevronRight, Zap,
-  Globe, Tag, AlertCircle, CheckCircle2, X, TrendingUp, Send,
-  Github
+  Globe, Tag, AlertCircle, CheckCircle2, X, TrendingUp, Send
 } from 'lucide-react';
 import { Merchant, SearchParams, SearchHistory } from '../types';
 import { geminiService } from '../services/geminiService';
@@ -11,7 +10,6 @@ import { storageService } from '../services/storageService';
 import { MerchantCard } from './MerchantCard';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
-import { GitHubRepoCreator } from './GitHubRepoCreator';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -77,7 +75,6 @@ export const HunterDashboard: React.FC = () => {
   const [exclusionCount, setExclusionCount] = React.useState(0);
   const [showFilters, setShowFilters] = React.useState(true);
   const [showTelegram, setShowTelegram] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'hunt' | 'github'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const socketRef = React.useRef<Socket | null>(null);
   
@@ -96,9 +93,9 @@ export const HunterDashboard: React.FC = () => {
     refreshStats();
   }, []);
 
-  const refreshStats = () => {
-    const list = storageService.getExclusionList();
-    setExclusionCount(list.names.length);
+  const refreshStats = async () => {
+    const count = await storageService.getExclusionCount();
+    setExclusionCount(count);
     refreshHistory();
   };
 
@@ -135,11 +132,11 @@ export const HunterDashboard: React.FC = () => {
       setLoading(true);
       try {
         const results = await geminiService.searchMerchants(remoteParams);
-        
+
         // Update UI
         setMerchants(prev => {
           const existingIds = new Set(prev.map(m => m.id));
-          const newUnique = results.filter(r => !existingIds.has(r.id));
+          const newUnique = results.merchants.filter(r => !existingIds.has(r.id));
           return [...newUnique, ...prev];
         });
 
@@ -147,7 +144,7 @@ export const HunterDashboard: React.FC = () => {
         socket.emit('hunt-results', {
           chatId: data.chatId,
           query: data.query,
-          merchants: results
+          merchants: results.merchants
         });
 
         refreshHistory();
@@ -185,12 +182,12 @@ export const HunterDashboard: React.FC = () => {
       const tgChatId = localStorage.getItem('sw_tg_chatid');
       const tgAutoSend = localStorage.getItem('sw_tg_autosend') === 'true';
 
-      if (tgAutoSend && tgToken && tgChatId && results.length > 0 && socketRef.current) {
+      if (tgAutoSend && tgToken && tgChatId && results.merchants.length > 0 && socketRef.current) {
         setTgStatus('sending');
         socketRef.current.emit('hunt-results', {
           chatId: tgChatId,
           query: params.keywords,
-          merchants: results
+          merchants: results.merchants
         });
         setTgStatus('success');
         setTimeout(() => setTgStatus('idle'), 3000);
@@ -198,7 +195,7 @@ export const HunterDashboard: React.FC = () => {
 
       setMerchants(prev => {
         const existingIds = new Set(prev.map(m => m.id));
-        const newUnique = results.filter(r => !existingIds.has(r.id));
+        const newUnique = results.merchants.filter(r => !existingIds.has(r.id));
         return [...newUnique, ...prev];
       });
       refreshStats();
@@ -468,30 +465,6 @@ export const HunterDashboard: React.FC = () => {
         {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-slate-950 p-6">
           <div className="max-w-[1200px] mx-auto space-y-6">
-            {/* Navigation Tabs */}
-            <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 mb-6 w-fit">
-              <button 
-                onClick={() => setActiveTab('hunt')}
-                className={cn(
-                  "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
-                  activeTab === 'hunt' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                Lead Hunter
-              </button>
-              <button 
-                onClick={() => setActiveTab('github')}
-                className={cn(
-                  "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all flex items-center gap-2",
-                  activeTab === 'github' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
-                )}
-              >
-                <Github className="w-3 h-3" /> GitHub Export
-              </button>
-            </div>
-
-            {activeTab === 'hunt' ? (
-              <>
                 {/* Global Search Bar */}
             <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
               <div className="flex flex-col md:flex-row gap-3">
@@ -637,12 +610,6 @@ export const HunterDashboard: React.FC = () => {
                 ))}
               </div>
             )}
-          </>
-        ) : (
-          <div className="max-w-2xl">
-            <GitHubRepoCreator />
-          </div>
-        )}
       </div>
     </main>
   </div>

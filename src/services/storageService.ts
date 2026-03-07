@@ -1,85 +1,81 @@
-import { Merchant, SearchHistory } from '../types';
-import { generateMerchantHash } from '../utils/normalization';
+import { Merchant, DashboardStats, SearchHistory } from '../types';
+import { enrichMerchant } from '../utils/enrichMerchant';
 
-const STORAGE_KEY_MERCHANTS = 'sw_merchants_history';
-const STORAGE_KEY_SEARCH_HISTORY = 'sw_search_history';
-
+// API-backed storage service - replaces localStorage
 export const storageService = {
-  // Get all merchants ever found
-  getAllMerchants: (): Merchant[] => {
+  async getMerchants(filters: Record<string, any> = {}): Promise<Merchant[]> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null) params.set(key, String(value));
+    }
+    const response = await fetch(`/api/merchants?${params}`);
+    const data = await response.json();
+    return (data.merchants || []).map(enrichMerchant);
+  },
+
+  async updateStatus(id: string, status: string, notes?: string): Promise<boolean> {
+    const response = await fetch(`/api/merchants/${id}/status`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, notes }),
+    });
+    return response.ok;
+  },
+
+  async updateNotes(id: string, notes: string): Promise<boolean> {
+    const response = await fetch(`/api/merchants/${id}/notes`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notes }),
+    });
+    return response.ok;
+  },
+
+  async setFollowUp(id: string, date: string): Promise<boolean> {
+    const response = await fetch(`/api/merchants/${id}/followup`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date }),
+    });
+    return response.ok;
+  },
+
+  async getStats(): Promise<DashboardStats> {
+    const response = await fetch('/api/stats');
+    return response.json();
+  },
+
+  async getSearchRuns(): Promise<any[]> {
+    const response = await fetch('/api/search-runs');
+    return response.json();
+  },
+
+  async getExclusionCount(): Promise<number> {
+    const stats = await this.getStats();
+    return stats.total;
+  },
+
+  getSearchHistory(): SearchHistory[] {
     try {
-      const stored = localStorage.getItem(STORAGE_KEY_MERCHANTS);
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      console.error('Failed to load merchants history', e);
+      const raw = localStorage.getItem('sw_search_history');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
       return [];
     }
   },
 
-  // Save new merchants, preventing duplicates
-  saveMerchants: (newMerchants: Merchant[]) => {
-    try {
-      const existing = storageService.getAllMerchants();
-      const existingHashes = new Set(existing.map(m => m.merchantHash));
-      
-      const uniqueNew = newMerchants.filter(m => !existingHashes.has(m.merchantHash));
-      // Cap history to 200 most recent to avoid localStorage limits
-      const updated = [...uniqueNew, ...existing].slice(0, 200);
-      
-      localStorage.setItem(STORAGE_KEY_MERCHANTS, JSON.stringify(updated));
-      return uniqueNew;
-    } catch (e) {
-      console.error('Failed to save merchants history (likely quota exceeded)', e);
-      // If full, try to save only the new ones by clearing old ones
-      try {
-        localStorage.setItem(STORAGE_KEY_MERCHANTS, JSON.stringify(newMerchants.slice(0, 50)));
-      } catch (e2) {
-        console.error('Critical storage failure', e2);
-      }
-      return newMerchants;
-    }
-  },
-
-  // Get exclusion list (names + urls)
-  getExclusionList: (): { names: string[], urls: string[] } => {
-    const merchants = storageService.getAllMerchants();
-    return {
-      names: merchants.map(m => m.businessName),
-      urls: merchants.map(m => m.url).filter(Boolean)
-    };
-  },
-
-  // Check if a merchant is excluded
-  isExcluded: (merchant: Partial<Merchant>): boolean => {
-    const merchants = storageService.getAllMerchants();
-    const hash = generateMerchantHash(merchant as any);
-    return merchants.some(m => m.merchantHash === hash);
-  },
-
-  // Search History
-  getSearchHistory: (): SearchHistory[] => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY_SEARCH_HISTORY);
-      return stored ? JSON.parse(stored) : [];
-    } catch (e) {
-      return [];
-    }
-  },
-
-  saveSearch: (search: Omit<SearchHistory, 'id' | 'date'>) => {
-    const history = storageService.getSearchHistory();
-    const newSearch: SearchHistory = {
+  saveSearch(search: Omit<SearchHistory, 'id' | 'date'>): void {
+    const history = this.getSearchHistory();
+    const entry: SearchHistory = {
       ...search,
-      id: Math.random().toString(36).substr(2, 9),
-      date: new Date().toISOString()
+      id: `sh_${Date.now()}`,
+      date: new Date().toISOString(),
     };
-    const updated = [newSearch, ...history].slice(0, 10); // Keep last 10
-    localStorage.setItem(STORAGE_KEY_SEARCH_HISTORY, JSON.stringify(updated));
+    history.unshift(entry);
+    localStorage.setItem('sw_search_history', JSON.stringify(history.slice(0, 20)));
   },
 
-  // Clear history
-  clearHistory: () => {
-    localStorage.removeItem(STORAGE_KEY_MERCHANTS);
-    localStorage.removeItem(STORAGE_KEY_SEARCH_HISTORY);
-  }
+  clearHistory(): void {
+    localStorage.setItem('sw_search_history', '[]');
+  },
 };
