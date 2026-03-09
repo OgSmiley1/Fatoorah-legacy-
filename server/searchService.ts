@@ -1,4 +1,4 @@
-import { GoogleGenAI } from '@google/genai';
+import { search, SafeSearchType } from 'duck-duck-scrape';
 import { insertMerchant, insertEvidence, insertSearchRun, updateSearchRun, MerchantRow } from './database.js';
 import { deduplicateBatch, normalizeBusinessName, normalizeUrl, normalizePhone, normalizeEmail, normalizeDomain, normalizeHandle, generateMerchantHash } from './dedupService.js';
 import { logger } from './logger.js';
@@ -30,6 +30,143 @@ export interface SearchResult {
   duplicatesRemoved: number;
   dedupReasons: Record<string, number>;
   errors: string[];
+}
+
+// ─── DuckDuckGo search + rule-based extraction ───
+
+interface DDGResult {
+  title: string;
+  description: string;
+  url: string;
+}
+
+function extractMerchantFromResult(result: DDGResult, params: SearchParams): any {
+  const url = result.url.toLowerCase();
+
+  // Platform detection
+  let platform = 'Website';
+  if (url.includes('instagram.com')) platform = 'Instagram';
+  else if (url.includes('tiktok.com')) platform = 'TikTok';
+  else if (url.includes('facebook.com') || url.includes('fb.com')) platform = 'Facebook';
+  else if (url.includes('t.me') || url.includes('telegram')) platform = 'Telegram';
+  else if (url.includes('maps.google') || url.includes('goo.gl/maps')) platform = 'Google Maps';
+
+  // Skip non-merchant pages
+  const skipDomains = ['wikipedia.org', 'youtube.com', 'twitter.com', 'x.com', 'linkedin.com', 'reddit.com', 'pinterest.com', 'news.', 'blog.', 'medium.com'];
+  if (skipDomains.some(d => url.includes(d))) return null;
+
+  // Business name: clean up title
+  let businessName = result.title
+    .replace(/\s*[-|·–—].*$/, '')
+    .replace(/\(@[^)]+\)/g, '')
+    .replace(/on Instagram:?.*$/i, '')
+    .replace(/\| Facebook$/i, '')
+    .replace(/- Home$/i, '')
+    .replace(/\.\.\.$/, '')
+    .trim();
+
+  if (!businessName || businessName.length < 2) return null;
+
+  // Instagram handle from URL
+  const instaMatch = result.url.match(/instagram\.com\/([a-zA-Z0-9_.]{2,30})\/?/);
+  const instagramHandle = instaMatch && !['p', 'explore', 'reels', 'stories', 'accounts', 'directory', 'about', 'developer'].includes(instaMatch[1])
+    ? instaMatch[1] : null;
+
+  // TikTok handle from URL
+  const tiktokMatch = result.url.match(/tiktok\.com\/@([a-zA-Z0-9_.]{2,30})/);
+  const tiktokHandle = tiktokMatch ? tiktokMatch[1] : null;
+
+  // Telegram handle
+  const telegramMatch = result.url.match(/t\.me\/([a-zA-Z0-9_]{2,30})/);
+  const telegramHandle = telegramMatch ? telegramMatch[1] : null;
+
+  const snippet = result.description || '';
+
+  // Phone number from snippet (GCC formats)
+  const phonePatterns = [
+    /(\+?971[\s-]?\d[\s-]?\d{3}[\s-]?\d{4})/,       // UAE
+    /(\+?966[\s-]?\d[\s-]?\d{3}[\s-]?\d{4})/,         // Saudi
+    /(\+?968[\s-]?\d{4}[\s-]?\d{4})/,                  // Oman
+    /(\+?965[\s-]?\d{4}[\s-]?\d{4})/,                  // Kuwait
+    /(\+?973[\s-]?\d{4}[\s-]?\d{4})/,                  // Bahrain
+    /(\+?974[\s-]?\d{4}[\s-]?\d{4})/,                  // Qatar
+    /(0\d{1,2}[\s-]?\d{7,8})/,                          // Local
+  ];
+  let phone: string | null = null;
+  for (const p of phonePatterns) {
+    const match = snippet.match(p) || result.title.match(p);
+    if (match) { phone = match[1]; break; }
+  }
+
+  // Email from snippet
+  const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  const email = emailMatch ? emailMatch[0] : null;
+
+  // Followers from snippet
+  const followersMatch = snippet.match(/([\d,.]+)\s*[KkMm]?\s*(?:followers|Followers|متابع|Abonnés)/i);
+  let followers = 0;
+  if (followersMatch) {
+    let numStr = followersMatch[0].replace(/,/g, '');
+    const numMatch = numStr.match(/([\d.]+)\s*([KkMm]?)/);
+    if (numMatch) {
+      let num = parseFloat(numMatch[1]);
+      const suffix = numMatch[2].toUpperCase();
+      if (suffix === 'K') num *= 1000;
+      else if (suffix === 'M') num *= 1000000;
+      followers = Math.round(num);
+    }
+  }
+
+  // Website extraction — if platform is social, website is null; if website, url IS the website
+  const website = platform === 'Website' ? result.url : null;
+
+  // Google Maps place ID
+  const mapsMatch = result.url.match(/place_id[=:]([A-Za-z0-9_-]+)/) || result.url.match(/cid[=:](\d+)/);
+  const mapsPlaceId = mapsMatch ? mapsMatch[1] : null;
+
+  // Category from search keywords
+  const category = params.categories?.[0] || params.keywords.split(',')[0]?.trim() || '';
+
+  return {
+    businessName,
+    platform,
+    url: result.url,
+    instagramHandle,
+    tiktokHandle,
+    telegramHandle,
+    category,
+    subCategory: params.subCategories?.[0] || null,
+    followers,
+    bio: snippet.slice(0, 200),
+    email,
+    phone,
+    whatsapp: phone, // Assume same as phone in GCC
+    website,
+    location: params.location,
+    lastActive: 'Recent',
+    isCOD: false,
+    paymentMethods: [] as string[],
+    contactValidation: {
+      status: phone || email ? 'UNVERIFIED' : 'DISCREPANCY',
+      sources: ['DuckDuckGo Search']
+    },
+    mapsPlaceId,
+  };
+}
+
+async function ddgSearch(query: string): Promise<DDGResult[]> {
+  try {
+    const results = await search(query, { safeSearch: SafeSearchType.OFF });
+    if (!results.results) return [];
+    return results.results.map((r: any) => ({
+      title: r.title || '',
+      description: r.description || '',
+      url: r.url || r.link || '',
+    })).filter((r: DDGResult) => r.url && r.title);
+  } catch (err: any) {
+    logger.error('ddg.search.failed', { query, error: err.message });
+    return [];
+  }
 }
 
 // ─── Scoring ───
@@ -245,115 +382,89 @@ export async function searchMerchants(params: SearchParams): Promise<SearchResul
     filters: JSON.stringify({ businessAge: params.businessAge, riskLevel: params.riskLevel, minFollowers: params.minFollowers }),
   });
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    const err = 'GEMINI_API_KEY not configured';
-    logger.error('search.failed', { runId: searchRunId, stage: 'config', error: err });
-    updateSearchRun(searchRunId, { status: 'failed', error_detail: err });
-    return { searchRunId, merchants: [], totalCandidates: 0, duplicatesRemoved: 0, dedupReasons: {}, errors: [err] };
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
   const maxResults = params.maxResults || 30;
 
-  // Build exclusion instruction
-  const advancedFilters = [
-    params.subCategories?.length ? `- SUB-CATEGORIES: Focus on: "${params.subCategories.join(', ')}"` : '',
-    params.categories?.length ? `- CATEGORIES: Target: "${params.categories.join(', ')}"` : '',
-    params.businessAge ? `- BUSINESS AGE: Prefer "${params.businessAge}"` : '',
-    params.minFollowers ? `- MINIMUM FOLLOWERS: At least ${params.minFollowers}` : '',
-    params.riskLevel && params.riskLevel !== 'ALL' ? `- RISK PROFILE: Target "${params.riskLevel}" risk` : '',
-  ].filter(Boolean).join('\n');
+  // Build search queries for 3 strategies (DuckDuckGo — free, no API key)
+  const keywords = params.keywords;
+  const location = params.location;
 
   const strategies = [
-    { name: 'Social & Web', focus: 'Instagram Business, TikTok Shop, Official Brand Websites, Google Maps' },
-    { name: 'Directories', focus: 'UAE Yellow Pages, ATN Info, Connect.ae, business directories' },
-    { name: 'Niche & Industry', focus: 'Industry blogs, forums, marketplaces, social commerce hashtags, Telegram channels' }
+    {
+      name: 'Social & Web',
+      queries: [
+        `${keywords} ${location} site:instagram.com`,
+        `${keywords} ${location} site:tiktok.com`,
+        `${keywords} ${location} online shop store`,
+      ]
+    },
+    {
+      name: 'Directories',
+      queries: [
+        `${keywords} ${location} business directory contact phone`,
+        `${keywords} ${location} yellow pages listing`,
+      ]
+    },
+    {
+      name: 'Niche & Industry',
+      queries: [
+        `${keywords} ${location} shop buy delivery ecommerce`,
+        `${keywords} ${location} small business seller`,
+      ]
+    }
   ];
 
-  const batchSize = Math.ceil(maxResults / strategies.length);
+  // Execute all strategy queries in parallel
+  const allSearchPromises = strategies.map(async (strategy) => {
+    const strategyResults: DDGResult[] = [];
+    try {
+      const queryPromises = strategy.queries.map(q => ddgSearch(q));
+      const queryResults = await Promise.allSettled(queryPromises);
 
-  // Execute parallel searches
-  const searchPromises = strategies.map(strategy => {
-    const prompt = `
-# ROLE
-You are a merchant discovery engine. Find ${batchSize} REAL, VERIFIED e-commerce merchants/businesses in ${params.location} matching: "${params.keywords}".
-
-# STRATEGY: ${strategy.name}
-Focus on: ${strategy.focus}
-
-${advancedFilters ? `# FILTERS\n${advancedFilters}` : ''}
-
-# CRITICAL RULES
-1. NO FABRICATION: Only return real businesses you can find evidence for.
-2. JSON ONLY: Return a JSON array of objects.
-3. Every merchant MUST have a real source URL or profile link.
-4. Prefer merchants selling online via social media, ecommerce, or simple storefronts.
-5. Prefer merchants that would benefit from payment links or online checkout.
-
-For each merchant provide:
-- businessName (string, required)
-- platform (string: Instagram/TikTok/Website/Facebook/Telegram)
-- url (string: direct link to their page/profile)
-- instagramHandle (string or null)
-- tiktokHandle (string or null)
-- category (string)
-- subCategory (string or null)
-- followers (number, best estimate)
-- bio (string, short description)
-- email (string or null)
-- phone (string or null)
-- whatsapp (string or null)
-- website (string or null)
-- location (string)
-- lastActive (string: approximate like "2025", "Recently", etc.)
-- isCOD (boolean)
-- paymentMethods (array of strings)
-- contactValidation (object: { status: "VERIFIED"|"UNVERIFIED"|"DISCREPANCY", sources: string[] })
-- mapsPlaceId (string or null, if from Google Maps)
-    `;
-
-    return ai.models.generateContent({
-      model: 'gemini-2.5-flash-preview-05-20',
-      contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        responseMimeType: 'application/json'
+      for (const qr of queryResults) {
+        if (qr.status === 'fulfilled') {
+          strategyResults.push(...qr.value);
+        }
       }
-    }).catch(err => {
+
+      logger.info('search.strategy.completed', {
+        runId: searchRunId,
+        strategy: strategy.name,
+        candidates: strategyResults.length
+      });
+    } catch (err: any) {
       const errMsg = `Strategy "${strategy.name}" failed: ${err.message || err}`;
       logger.error('search.strategy.failed', { runId: searchRunId, strategy: strategy.name, error: errMsg });
       errors.push(errMsg);
-      return null;
-    });
-  });
-
-  const results = await Promise.allSettled(searchPromises);
-
-  // Parse results
-  let rawMerchants: any[] = [];
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled' && result.value) {
-      try {
-        const text = result.value.text;
-        if (!text) {
-          errors.push(`Strategy "${strategies[index].name}" returned empty response`);
-          return;
-        }
-        const parsed = JSON.parse(text);
-        const batch = Array.isArray(parsed) ? parsed : [parsed];
-        rawMerchants = [...rawMerchants, ...batch.filter((m: any) => m && m.businessName)];
-        logger.info('search.strategy.completed', { runId: searchRunId, strategy: strategies[index].name, candidates: batch.length });
-      } catch (e: any) {
-        const errMsg = `Failed to parse "${strategies[index].name}": ${e.message}`;
-        logger.error('search.parse.failed', { runId: searchRunId, strategy: strategies[index].name, error: errMsg });
-        errors.push(errMsg);
-      }
-    } else if (result.status === 'rejected') {
-      const errMsg = `Strategy "${strategies[index].name}" rejected: ${result.reason}`;
-      errors.push(errMsg);
     }
+    return { name: strategy.name, results: strategyResults };
   });
+
+  const strategyResults = await Promise.allSettled(allSearchPromises);
+
+  // Parse and extract merchants from DDG results
+  let rawMerchants: any[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const sr of strategyResults) {
+    if (sr.status === 'fulfilled') {
+      for (const ddgResult of sr.value.results) {
+        // Skip duplicate URLs
+        const normalizedUrl = ddgResult.url.toLowerCase().replace(/\/$/, '');
+        if (seenUrls.has(normalizedUrl)) continue;
+        seenUrls.add(normalizedUrl);
+
+        const merchant = extractMerchantFromResult(ddgResult, params);
+        if (merchant) {
+          rawMerchants.push(merchant);
+        }
+      }
+    } else {
+      errors.push(`Strategy search rejected: ${sr.reason}`);
+    }
+  }
+
+  // Limit to maxResults
+  rawMerchants = rawMerchants.slice(0, maxResults);
 
   const totalCandidates = rawMerchants.length;
   logger.info('search.candidates.received', { runId: searchRunId, total: totalCandidates });
@@ -463,7 +574,7 @@ For each merchant provide:
       // Save evidence
       const evidence = m.contactValidation?.sources || [];
       if (m.url) {
-        insertEvidence(merchantRow.id, 'google_search', m.businessName, m.url);
+        insertEvidence(merchantRow.id, 'web_search', m.businessName, m.url);
       }
       if (m.mapsPlaceId) {
         insertEvidence(merchantRow.id, 'google_maps', m.businessName, `https://maps.google.com/?cid=${m.mapsPlaceId}`);
