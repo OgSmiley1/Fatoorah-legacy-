@@ -10,7 +10,47 @@ import db from "./db";
 import { v4 as uuidv4 } from "uuid";
 import { huntMerchants } from "./server/searchService";
 import { logger } from "./server/logger";
-import { computeFitScore } from "./server/scoringService";
+
+interface DbCountRow {
+  count: number;
+}
+
+interface DbLeadRow {
+  lead_id: string;
+  lead_status: string;
+  lead_notes: string | null;
+  next_action: string | null;
+  follow_up_date: string | null;
+  outcome: string | null;
+  business_name: string;
+  instagram_handle: string | null;
+  category: string | null;
+  email: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  website: string | null;
+  source_platform: string | null;
+  source_url: string | null;
+  myfatoorah_fit_score: number | null;
+  contactability_score: number | null;
+  confidence_score: number | null;
+  metadata_json: string | null;
+  [key: string]: unknown;
+}
+
+interface HuntMerchant {
+  businessName: string;
+  category: string;
+  instagramHandle?: string;
+  fitScore: number;
+  contactScore: number;
+  confidenceScore: number;
+  contactConfidence?: { overall: string };
+  phone?: string;
+  whatsapp?: string;
+  url?: string;
+  status: string;
+}
 
 async function startServer() {
   const app = express();
@@ -34,76 +74,108 @@ async function startServer() {
     cors: { origin: "*", methods: ["GET", "POST"] }
   });
 
-  const huntRequests = new Map<string, number>();
-
   io.on('connection', (socket) => {
     console.log('Client connected:', socket.id);
-    
-    socket.on('hunt-finished', async (data: any) => {
-      const { merchants, query } = data;
-      const chatId = huntRequests.get(query);
-      if (chatId) {
-        const newLeads = merchants.filter((m: any) => m.status === 'NEW');
-        if (newLeads.length === 0) {
-          await sendTelegram(chatId, `⚠️ No new merchants found for "${query}".`);
-        } else {
-          await sendTelegram(chatId, `🎯 FOUND ${newLeads.length} NEW LEADS FOR "${query}":`);
-          for (const m of newLeads) {
-            const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
-📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${m.fitScore}/100
-📞 Phone: ${m.phone || 'N/A'}
-💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
-            `.trim();
-            await sendTelegram(chatId, msg, 'Markdown');
-          }
-        }
-        huntRequests.delete(query);
-      }
-    });
   });
 
   const PORT = parseInt(process.env.PORT || '5000');
 
-  // --- API ROUTES ---
-
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-  // Discovery Search
   app.post("/api/search", async (req, res) => {
     const { keywords, location, maxResults } = req.body;
     try {
       const result = await huntMerchants({ keywords, location, maxResults });
       res.json(result);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
     }
   });
 
-  // Ingestion
+  app.post("/api/ai-search", async (req, res) => {
+    const { keywords, location, maxResults } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+    
+    if (!apiKey) {
+      return res.json({ merchants: [], message: 'AI search unavailable: no API key configured' });
+    }
+
+    try {
+      const { GoogleGenAI, Type } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey });
+      
+      const prompt = `Find ${maxResults || 10} real, active merchants in ${location} related to "${keywords}". 
+      Focus on GCC-based small businesses selling through social media (Instagram, WhatsApp, TikTok).
+      Find their business name, platform, URL, and contact details (phone, email, instagram handle).
+      Include Arabic business names when relevant. Only return real businesses you can find evidence for.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                businessName: { type: Type.STRING },
+                platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'telegram'] },
+                url: { type: Type.STRING },
+                instagramHandle: { type: Type.STRING },
+                phone: { type: Type.STRING },
+                email: { type: Type.STRING },
+                category: { type: Type.STRING },
+                evidence: { type: Type.STRING }
+              },
+              required: ['businessName', 'platform', 'url']
+            }
+          }
+        }
+      });
+
+      const text = response.text;
+      if (!text) return res.json({ merchants: [] });
+      
+      const merchants = JSON.parse(text) as Array<Record<string, string>>;
+      const mapped = merchants.map((m) => ({
+        ...m,
+        whatsapp: m.phone,
+        evidence: [m.evidence || "Found via AI search"]
+      }));
+
+      res.json({ merchants: mapped });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      logger.error('ai_search_failed', { error: errMsg });
+      res.json({ merchants: [], error: errMsg });
+    }
+  });
+
   app.post("/api/merchants/ingest", async (req, res) => {
     const { merchants, query, location } = req.body;
     try {
       const { ingestMerchants } = await import("./discovery");
       const result = await ingestMerchants({ merchants, query, location });
       res.json(result);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
     }
   });
 
-  // Leads Management
   app.get("/api/leads", (req, res) => {
-    const { status } = req.query;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
     let query = `
-      SELECT l.*, m.*, l.id as lead_id 
+      SELECT l.*, m.*, l.id as lead_id, l.status as lead_status,
+             l.notes as lead_notes, l.next_action, l.follow_up_date, l.outcome,
+             m.metadata_json
       FROM leads l 
       JOIN merchants m ON l.merchant_id = m.id
     `;
-    const params: any[] = [];
+    const params: string[] = [];
     
     if (status) {
       query += " WHERE l.status = ?";
@@ -112,7 +184,31 @@ async function startServer() {
     
     query += " ORDER BY l.created_at DESC";
     
-    const leads = db.prepare(query).all(...params);
+    const rawLeads = db.prepare(query).all(...params) as DbLeadRow[];
+    const leads = rawLeads.map(lead => {
+      let contactConfidence = null;
+      let fitSignals: string[] = [];
+      try {
+        const meta = JSON.parse(lead.metadata_json || '{}');
+        contactConfidence = meta.contactConfidence || null;
+        fitSignals = meta.fitSignals || [];
+      } catch {}
+      return {
+        ...lead,
+        id: lead.lead_id,
+        status: lead.lead_status,
+        notes: lead.lead_notes,
+        contactConfidence,
+        fitSignals,
+        businessName: lead.business_name,
+        instagramHandle: lead.instagram_handle,
+        fitScore: lead.myfatoorah_fit_score,
+        contactScore: lead.contactability_score,
+        confidenceScore: lead.confidence_score,
+        platform: lead.source_platform,
+        url: lead.source_url,
+      };
+    });
     res.json(leads);
   });
 
@@ -121,7 +217,7 @@ async function startServer() {
     const { status, notes, next_action, follow_up_date, outcome } = req.body;
     
     const updates: string[] = [];
-    const params: any[] = [];
+    const params: (string | null)[] = [];
     
     if (status) { updates.push("status = ?"); params.push(status); }
     if (notes !== undefined) { updates.push("notes = ?"); params.push(notes); }
@@ -140,25 +236,55 @@ async function startServer() {
     res.json({ success: true });
   });
 
-  // Stats
   app.get("/api/stats", (req, res) => {
     const stats = {
-      total_merchants: db.prepare("SELECT COUNT(*) as count FROM merchants").get() as any,
-      total_leads: db.prepare("SELECT COUNT(*) as count FROM leads").get() as any,
-      new_leads: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get() as any,
-      onboarded: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'ONBOARDED'").get() as any,
+      total_merchants: db.prepare("SELECT COUNT(*) as count FROM merchants").get() as DbCountRow,
+      total_leads: db.prepare("SELECT COUNT(*) as count FROM leads").get() as DbCountRow,
+      new_leads: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get() as DbCountRow,
+      onboarded: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'ONBOARDED'").get() as DbCountRow,
+      duplicates: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'DUPLICATE'").get() as DbCountRow,
       recent_runs: db.prepare("SELECT * FROM search_runs ORDER BY created_at DESC LIMIT 5").all()
     };
     res.json(stats);
   });
 
-  // Logs
   app.get("/api/logs", (req, res) => {
     const logs = db.prepare("SELECT * FROM logs ORDER BY created_at DESC LIMIT 50").all();
     res.json(logs);
   });
 
-  // --- TELEGRAM BOT (SERVER-SIDE) ---
+  app.post("/api/telegram/test", async (req, res) => {
+    const { token, chatId } = req.body;
+    try {
+      const meResponse = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      if (!meResponse.ok) return res.json({ ok: false });
+      
+      const chatResponse = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId })
+      });
+      
+      res.json({ ok: chatResponse.ok });
+    } catch {
+      res.json({ ok: false });
+    }
+  });
+
+  app.post("/api/telegram/send", async (req, res) => {
+    const { token, chatId, message } = req.body;
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text: message })
+      });
+      const ok = response.ok;
+      res.json({ ok });
+    } catch {
+      res.json({ ok: false });
+    }
+  });
 
   let lastUpdateId = 0;
   async function pollTelegram() {
@@ -167,7 +293,13 @@ async function startServer() {
 
     try {
       const response = await fetch(`https://api.telegram.org/bot${token}/getUpdates?offset=${lastUpdateId + 1}&timeout=30`);
-      const data: any = await response.json();
+      const data = await response.json() as {
+        ok: boolean;
+        result?: Array<{
+          update_id: number;
+          message?: { text?: string; chat: { id: number } };
+        }>;
+      };
 
       if (data.ok && data.result) {
         for (const update of data.result) {
@@ -181,42 +313,44 @@ async function startServer() {
           if (text.startsWith('/hunt')) {
             const query = text.replace('/hunt', '').trim();
             if (!query) {
-              await sendTelegram(chatId, "❌ Please provide keywords. Example: /hunt Luxury Abayas Dubai");
+              await sendTelegram(chatId, "Please provide keywords. Example: /hunt Luxury Abayas Dubai");
               continue;
             }
 
-            await sendTelegram(chatId, `🧙‍♂️ SMILEY WIZARD: Starting server-side hunt for "${query}"...`);
-            io.emit('hunt-started', { query });
+            await sendTelegram(chatId, `Starting server-side hunt for "${query}"...`);
             
             try {
-              // Split query into keywords and location if possible, or just use as keywords
               const parts = query.split(' ');
               const location = parts.length > 1 ? parts.pop() : 'Dubai';
               const keywords = parts.join(' ');
               
               const result = await huntMerchants({ keywords, location: location || 'Dubai' });
-              
+
               io.emit('hunt-completed', { query, merchants: result.merchants });
 
-              if (result.newLeadsCount === 0) {
-                await sendTelegram(chatId, `⚠️ No new merchants found for "${query}".`);
+              const newMerchants = result.merchants.filter((m: HuntMerchant) => m.status === 'NEW');
+              if (newMerchants.length === 0) {
+                await sendTelegram(chatId, `No new merchants found for "${query}".`);
               } else {
-                await sendTelegram(chatId, `🎯 FOUND ${result.newLeadsCount} NEW LEADS FOR "${query}":`);
-                for (const m of result.merchants) {
+                await sendTelegram(chatId, `Found ${newMerchants.length} new leads for "${query}":`);
+                for (const m of newMerchants) {
+                  const contactConf = m.contactConfidence?.overall || 'N/A';
                   const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
-📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${computeFitScore(m.platform, 0)}/100
-📞 Phone: ${m.phone || 'N/A'}
-💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
+${m.businessName}
+Category: ${m.category}
+IG: @${m.instagramHandle || 'N/A'}
+Fit Score: ${m.fitScore}/100
+Contact: ${contactConf}
+Phone: ${m.phone || 'N/A'}
+WhatsApp: ${m.whatsapp || 'N/A'}
+Source: ${m.url}
                   `.trim();
-                  await sendTelegram(chatId, msg, 'Markdown');
+                  await sendTelegram(chatId, msg);
                 }
               }
-            } catch (error: any) {
-              await sendTelegram(chatId, `❌ Hunt failed: ${error.message}`);
+            } catch (error: unknown) {
+              const errMsg = error instanceof Error ? error.message : String(error);
+              await sendTelegram(chatId, `Hunt failed: ${errMsg}`);
             }
           } else if (text.startsWith('/export')) {
             const status = text.replace('/export', '').trim().toUpperCase() || 'NEW';
@@ -227,21 +361,21 @@ async function startServer() {
               WHERE l.status = ?
               ORDER BY l.created_at DESC
             `;
-            const leads = db.prepare(query).all(status) as any[];
+            const leads = db.prepare(query).all(status) as DbLeadRow[];
 
             if (leads.length === 0) {
-              await sendTelegram(chatId, `⚠️ No leads found with status "${status}".`);
+              await sendTelegram(chatId, `No leads found with status "${status}".`);
               continue;
             }
 
-            await sendTelegram(chatId, `📊 Exporting ${leads.length} leads with status "${status}"...`);
+            await sendTelegram(chatId, `Exporting ${leads.length} leads with status "${status}"...`);
 
             const headers = [
-              "Business Name", "Category", "Sub-Category", "Website", "IG Handle", 
-              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score"
+              "Business Name", "Category", "Website", "IG Handle", 
+              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score", "Contact Quality"
             ];
             
-            const escapeCsv = (val: any) => {
+            const escapeCsv = (val: unknown) => {
               if (val === null || val === undefined) return "";
               const str = String(val);
               return (str.includes(",") || str.includes("\"") || str.includes("\n")) 
@@ -249,10 +383,17 @@ async function startServer() {
                 : str;
             };
 
-            const rows = leads.map(m => [
-              m.business_name, m.category, m.subcategory, m.website, m.instagram_handle,
-              m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score
-            ].map(escapeCsv).join(","));
+            const rows = leads.map(m => {
+              let contactQuality = 'UNKNOWN';
+              try {
+                const meta = JSON.parse(m.metadata_json || '{}');
+                contactQuality = meta.contactConfidence?.overall || 'UNKNOWN';
+              } catch {}
+              return [
+                m.business_name, m.category, m.website, m.instagram_handle,
+                m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score, contactQuality
+              ].map(escapeCsv).join(",");
+            });
 
             const csvContent = [headers.join(","), ...rows].join("\n");
             const fileName = `SmileyWizard_Leads_${status}_${new Date().toISOString().split('T')[0]}.csv`;
@@ -261,34 +402,40 @@ async function startServer() {
             fs.writeFileSync(filePath, csvContent);
 
             try {
-              await sendTelegramDocument(chatId, filePath, `🎯 Exported ${leads.length} leads (${status})`);
+              await sendTelegramDocument(chatId, filePath, `Exported ${leads.length} leads (${status})`);
             } finally {
               if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
             }
           } else if (text === '/status') {
-            const stats: any = db.prepare("SELECT COUNT(*) as count FROM merchants").get();
-            const newLeads: any = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get();
-            await sendTelegram(chatId, `📊 *WIZARD STATUS*\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}`, 'Markdown');
+            const stats = db.prepare("SELECT COUNT(*) as count FROM merchants").get() as DbCountRow;
+            const newLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get() as DbCountRow;
+            const contacted = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'CONTACTED'").get() as DbCountRow;
+            await sendTelegram(chatId, `WIZARD STATUS\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}\nContacted: ${contacted.count}`);
           } else if (text === '/recent') {
             const query = `
-              SELECT m.*, l.status as lead_status
+              SELECT m.*, l.status as lead_status, m.metadata_json
               FROM leads l
               JOIN merchants m ON l.merchant_id = m.id
               ORDER BY l.created_at DESC
               LIMIT 5
             `;
-            const leads = db.prepare(query).all() as any[];
+            const leads = db.prepare(query).all() as DbLeadRow[];
             if (leads.length === 0) {
-              await sendTelegram(chatId, "📭 No leads in database yet.");
+              await sendTelegram(chatId, "No leads in database yet.");
             } else {
-              await sendTelegram(chatId, "🕒 *RECENT LEADS:*", 'Markdown');
+              await sendTelegram(chatId, "RECENT LEADS:");
               for (const m of leads) {
-                const msg = `🏢 *${m.business_name}* (${m.lead_status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
-                await sendTelegram(chatId, msg, 'Markdown');
+                let contactQuality = 'UNKNOWN';
+                try {
+                  const meta = JSON.parse(m.metadata_json || '{}');
+                  contactQuality = meta.contactConfidence?.overall || 'UNKNOWN';
+                } catch {}
+                const msg = `${m.business_name} (${m.lead_status})\n${m.category}\nFit: ${m.myfatoorah_fit_score}/100 | Contact: ${contactQuality}`;
+                await sendTelegram(chatId, msg);
               }
             }
           } else if (text === '/start') {
-            await sendTelegram(chatId, "👋 Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start discovery\n/status - View DB stats\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
+            await sendTelegram(chatId, "Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start discovery\n/status - View DB stats\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
           }
         }
       }
@@ -327,8 +474,6 @@ async function startServer() {
   }
 
   pollTelegram();
-
-  // --- VITE / STATIC SERVING ---
 
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

@@ -2,10 +2,10 @@ import React from 'react';
 import { 
   Search, MapPin, Filter, Loader2, Download, Save, Shield, 
   Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send
+  X, TrendingUp, Send, Eye, EyeOff
 } from 'lucide-react';
 import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
-import { geminiService } from '../services/geminiService';
+import { apiClient } from '../services/apiClient';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
@@ -72,21 +72,27 @@ export const HunterDashboard: React.FC = () => {
   const [loading, setLoading] = React.useState(false);
   const [merchants, setMerchants] = React.useState<Merchant[]>([]);
   const [savedLeads, setSavedLeads] = React.useState<Merchant[]>([]);
-  const [stats, setStats] = React.useState({ total: 0, leads: 0 });
+  const [stats, setStats] = React.useState({ total: 0, leads: 0, newLeads: 0, duplicates: 0 });
   const [showFilters, setShowFilters] = React.useState(true);
   const [showTelegram, setShowTelegram] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
+  const [showDuplicates, setShowDuplicates] = React.useState(false);
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
 
   const refreshStats = async () => {
     try {
-      const data = await geminiService.getStats();
-      setStats({ total: data.totalMerchants, leads: data.totalLeads });
+      const data = await apiClient.getStats();
+      setStats({ 
+        total: data.totalMerchants, 
+        leads: data.totalLeads,
+        newLeads: data.newLeads,
+        duplicates: data.duplicates
+      });
       
-      const leads = await geminiService.getLeads();
+      const leads = await apiClient.getLeads();
       setSavedLeads(leads);
       
       refreshHistory();
@@ -99,7 +105,6 @@ export const HunterDashboard: React.FC = () => {
     refreshStats();
   }, []);
 
-  // Socket.io initialization
   React.useEffect(() => {
     const socket = io();
     socketRef.current = socket;
@@ -108,23 +113,21 @@ export const HunterDashboard: React.FC = () => {
       console.log('Connected to server socket');
     });
 
-    socket.on('hunt-started', (data: any) => {
-      setLoading(true);
-      setParams(prev => ({ ...prev, keywords: data.query }));
-    });
-
-    socket.on('hunt-completed', (data: any) => {
-      setLoading(false);
-      setMerchants(data.merchants);
-      refreshStats();
+    socket.on('hunt-completed', (data: { merchants?: Merchant[] }) => {
+      if (data.merchants) {
+        setMerchants(prev => {
+          const seenIds = new Set(prev.map(m => m.id));
+          const newOnes = data.merchants!.filter((m: Merchant) => !seenIds.has(m.id));
+          return [...prev, ...newOnes];
+        });
+        refreshStats();
+      }
     });
 
     return () => {
       socket.disconnect();
     };
   }, []);
-
-  const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
 
   const handleSearch = async (overrideKeywords?: string) => {
     const searchKeywords = overrideKeywords || params.keywords;
@@ -138,21 +141,18 @@ export const HunterDashboard: React.FC = () => {
 
       let results: Merchant[] = [];
       
-      // Strategy 1: Client-side AI Search (Resilient & Grounded)
       console.log("Starting AI Search...");
-      const aiResults = await geminiService.aiSearchMerchants(searchParams);
+      const aiResults = await apiClient.aiSearchMerchants(searchParams);
       
       if (aiResults.length > 0) {
         console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        const ingestResult = await apiClient.ingestMerchants(aiResults, searchKeywords, params.location);
         results = ingestResult.merchants;
       }
 
-      // Strategy 2: Fallback to Server-side Scraper if AI found too few
       if (results.length < (params.maxResults || 10) / 2) {
         console.log("Falling back to server-side scraper...");
-        const scraperResults = await geminiService.searchMerchants(searchParams);
-        // Merge results, avoiding duplicates
+        const scraperResults = await apiClient.searchMerchants(searchParams);
         const seenIds = new Set(results.map(r => r.id));
         const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
         results = [...results, ...newScraperResults];
@@ -160,23 +160,15 @@ export const HunterDashboard: React.FC = () => {
 
       setMerchants(results);
       
-      // Save to history
       saveSearch({
         sessionId: Math.random().toString(36).substr(2, 9),
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
-        resultsCount: results.length
+        resultsCount: results.filter(r => r.status !== 'DUPLICATE').length
       });
       
       refreshStats();
-      
-      if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', { 
-          merchants: results, 
-          query: searchKeywords 
-        });
-      }
     } catch (e) {
       console.error("Search failed:", e);
       setTgStatus('error');
@@ -186,13 +178,9 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
-  React.useEffect(() => {
-    handleSearchRef.current = handleSearch;
-  }, [handleSearch]);
-
   const handleSaveLead = async (merchant: Merchant) => {
     try {
-      await geminiService.updateLead(merchant.id, { status: 'NEW' });
+      await apiClient.updateLead(merchant.id, { status: 'NEW' });
       refreshStats();
     } catch (error) {
       console.error("Failed to save lead:", error);
@@ -207,9 +195,13 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
+  const newMerchants = merchants.filter(m => m.status !== 'DUPLICATE');
+  const duplicateMerchants = merchants.filter(m => m.status === 'DUPLICATE');
+  const displayMerchants = showDuplicates ? merchants : newMerchants;
+  const newThisSession = newMerchants.length;
+
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
-      {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-30">
         <div className="max-w-[1600px] mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -239,12 +231,12 @@ export const HunterDashboard: React.FC = () => {
                 <p className="text-lg font-black text-white">{stats.total}</p>
               </div>
               <div className="text-center">
-                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Qualified Leads</p>
-                <p className="text-lg font-black text-emerald-400">{stats.leads}</p>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">New Leads</p>
+                <p className="text-lg font-black text-emerald-400">{stats.newLeads}</p>
               </div>
             </div>
             <button
-              onClick={() => exportMerchantsToExcel(merchants.length > 0 ? merchants : savedLeads)}
+              onClick={() => exportMerchantsToExcel(merchants.length > 0 ? newMerchants : savedLeads)}
               disabled={merchants.length === 0 && savedLeads.length === 0}
               className="mission-control-button mission-control-button-primary"
             >
@@ -256,13 +248,11 @@ export const HunterDashboard: React.FC = () => {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar Filters */}
         <aside className={cn(
           "w-80 border-r border-slate-800 bg-slate-900/30 overflow-y-auto transition-all duration-300 hidden lg:block",
           !showFilters && "-ml-80"
         )}>
           <div className="p-6 space-y-8">
-            {/* Search Section */}
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="mission-control-label">Lead Qualification</h3>
@@ -346,7 +336,6 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Platforms */}
             <div className="space-y-4">
               <h3 className="mission-control-label">Discovery Channels</h3>
               <div className="grid grid-cols-2 gap-2">
@@ -374,7 +363,6 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Search History */}
             {searchHistory.length > 0 && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
@@ -407,10 +395,8 @@ export const HunterDashboard: React.FC = () => {
           </div>
         </aside>
 
-        {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-slate-950 p-6">
           <div className="max-w-[1200px] mx-auto space-y-6">
-            {/* Navigation Tabs */}
             <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 mb-6 w-fit">
               <button 
                 onClick={() => setActiveTab('hunt')}
@@ -434,100 +420,115 @@ export const HunterDashboard: React.FC = () => {
 
             {activeTab === 'hunt' ? (
               <>
-                {/* Global Search Bar */}
-            <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
-              <div className="flex flex-col md:flex-row gap-3">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
-                  <input
-                    type="text"
-                    value={params.keywords}
-                    onChange={e => setParams({ ...params, keywords: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
-                    placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
-                  />
+                <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
+                  <div className="flex flex-col md:flex-row gap-3">
+                    <div className="flex-1 relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
+                      <input
+                        type="text"
+                        value={params.keywords}
+                        onChange={e => setParams({ ...params, keywords: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
+                        placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
+                      />
+                    </div>
+                    <div className="w-full md:w-64 relative">
+                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
+                      <input
+                        type="text"
+                        value={params.location}
+                        onChange={e => setParams({ ...params, location: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
+                        placeholder="Location..."
+                      />
+                    </div>
+                    <button
+                      onClick={() => handleSearch()}
+                      disabled={loading}
+                      className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
+                    >
+                      {loading ? <Loader2 className="animate-spin" size={24} /> : <Zap size={24} className="group-hover:scale-110 transition-transform" />}
+                      <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
+                    </button>
+                  </div>
                 </div>
-                <div className="w-full md:w-64 relative">
-                  <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
-                  <input
-                    type="text"
-                    value={params.location}
-                    onChange={e => setParams({ ...params, location: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
-                    placeholder="Location..."
-                  />
-                </div>
-                <button
-                  onClick={() => handleSearch()}
-                  disabled={loading}
-                  className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
-                >
-                  {loading ? <Loader2 className="animate-spin" size={24} /> : <Zap size={24} className="group-hover:scale-110 transition-transform" />}
-                  <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
-                </button>
-              </div>
-            </div>
 
-            {/* Results Grid */}
-            {merchants.length === 0 && !loading ? (
-              <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
-                <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
-                  <Search size={40} className="text-slate-700" />
-                </div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
-                  <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
-                    Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
-                <AnimatePresence mode="popLayout">
-                  {merchants.map((merchant) => (
-                    <MerchantCard
-                      key={merchant.id}
-                      merchant={merchant}
-                      onSave={handleSaveLead}
-                      isSaved={savedLeads.some(l => l.id === merchant.id)}
-                    />
-                  ))}
-                </AnimatePresence>
-              </div>
-            )}
-
-            {/* Loading State */}
-            {loading && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {[1, 2, 3, 4].map(i => (
-                  <div key={i} className="mission-control-card h-[400px] animate-pulse">
-                    <div className="p-6 space-y-6">
-                      <div className="flex justify-between">
-                        <div className="w-1/2 h-6 bg-slate-800 rounded" />
-                        <div className="w-20 h-6 bg-slate-800 rounded-full" />
-                      </div>
-                      <div className="grid grid-cols-3 gap-3">
-                        {[1, 2, 3].map(j => (
-                          <div key={j} className="h-16 bg-slate-800 rounded-xl" />
-                        ))}
-                      </div>
-                      <div className="h-24 bg-slate-800 rounded-xl" />
+                {merchants.length > 0 && (
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
+                        {newMerchants.length} new leads
+                      </span>
+                      {duplicateMerchants.length > 0 && (
+                        <button
+                          onClick={() => setShowDuplicates(!showDuplicates)}
+                          className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 hover:text-slate-300 uppercase tracking-widest transition-colors"
+                        >
+                          {showDuplicates ? <EyeOff size={12} /> : <Eye size={12} />}
+                          {duplicateMerchants.length} duplicates {showDuplicates ? 'shown' : 'hidden'}
+                        </button>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          <PipelineView />
-        )}
-      </div>
-    </main>
-  </div>
+                )}
 
-      {/* Footer Status Bar */}
+                {displayMerchants.length === 0 && !loading ? (
+                  <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
+                    <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
+                      <Search size={40} className="text-slate-700" />
+                    </div>
+                    <div className="space-y-2">
+                      <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
+                      <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
+                        Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
+                    <AnimatePresence mode="popLayout">
+                      {displayMerchants.map((merchant) => (
+                        <MerchantCard
+                          key={merchant.id}
+                          merchant={merchant}
+                          onSave={handleSaveLead}
+                          isSaved={savedLeads.some(l => l.id === merchant.id)}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                )}
+
+                {loading && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {[1, 2, 3, 4].map(i => (
+                      <div key={i} className="mission-control-card h-[400px] animate-pulse">
+                        <div className="p-6 space-y-6">
+                          <div className="flex justify-between">
+                            <div className="w-1/2 h-6 bg-slate-800 rounded" />
+                            <div className="w-20 h-6 bg-slate-800 rounded-full" />
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            {[1, 2, 3].map(j => (
+                              <div key={j} className="h-16 bg-slate-800 rounded-xl" />
+                            ))}
+                          </div>
+                          <div className="h-24 bg-slate-800 rounded-xl" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <PipelineView />
+            )}
+          </div>
+        </main>
+      </div>
+
       <footer className="h-10 border-t border-slate-800 bg-slate-900 flex items-center px-6 justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
@@ -540,7 +541,9 @@ export const HunterDashboard: React.FC = () => {
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span>{stats.total} Merchants in Database</span>
+          <span>{newThisSession} new this session</span>
+          <span>|</span>
+          <span>{stats.total} total in DB</span>
           <button onClick={clearAllHistory} className="hover:text-rose-500 transition-colors">Clear History</button>
         </div>
       </footer>

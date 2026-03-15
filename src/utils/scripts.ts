@@ -1,6 +1,11 @@
 import { Merchant } from '../types';
 
-export const generateOutreachScripts = (merchant: Partial<Merchant>) => {
+export const generateOutreachScripts = (merchant: Partial<Merchant>): {
+  arabic: string;
+  english: string;
+  whatsapp: string;
+  instagram: string;
+} => {
   const name = merchant.businessName || 'there';
   const platform = merchant.platform || 'social media';
   

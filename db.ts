@@ -1,9 +1,7 @@
 import Database from 'better-sqlite3';
-import path from 'path';
 
 const db = new Database('wizard.db');
 
-// Initialize schema
 db.exec(`
   CREATE TABLE IF NOT EXISTS merchants (
     id TEXT PRIMARY KEY,
@@ -20,7 +18,6 @@ db.exec(`
     whatsapp TEXT,
     email TEXT,
     instagram_handle TEXT,
-    github_url TEXT,
     tiktok_handle TEXT,
     telegram_handle TEXT,
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -71,6 +68,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_merchants_normalized_name ON merchants(normalized_name);
   CREATE INDEX IF NOT EXISTS idx_merchants_phone ON merchants(phone);
   CREATE INDEX IF NOT EXISTS idx_merchants_email ON merchants(email);
+  CREATE INDEX IF NOT EXISTS idx_merchants_source_url ON merchants(source_url);
   CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
   CREATE INDEX IF NOT EXISTS idx_leads_merchant_id ON leads(merchant_id);
 `);

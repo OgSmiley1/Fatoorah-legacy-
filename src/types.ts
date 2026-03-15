@@ -1,11 +1,21 @@
 export type RiskCategory = 'LOW' | 'MEDIUM' | 'HIGH';
 export type ValidationStatus = 'VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
 export type ExclusionStatus = 'ACTIVE' | 'EXCLUDED' | 'BLACKLISTED';
+export type ContactConfidenceLevel = 'VERIFIED' | 'LIKELY' | 'WEAK' | 'MISSING';
+export type ContactabilityLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
 
 export interface ContactValidation {
   status: ValidationStatus;
   sources: string[];
   notes?: string;
+}
+
+export interface ContactConfidence {
+  phone: ContactConfidenceLevel;
+  whatsapp: ContactConfidenceLevel;
+  email: ContactConfidenceLevel;
+  instagram: ContactConfidenceLevel;
+  overall: ContactabilityLevel;
 }
 
 export interface RiskAssessment {
@@ -47,7 +57,7 @@ export interface Lead {
   outcome?: string;
   createdAt: string;
   updatedAt: string;
-  merchant?: Merchant; // Joined data
+  merchant?: Merchant;
 }
 
 export interface SearchRun {
@@ -63,61 +73,92 @@ export interface SearchRun {
 
 export interface Merchant {
   id: string;
-  merchantHash: string;
-  mapsPlaceId?: string;
-  evidence: EvidenceSource[];
   businessName: string;
   platform: string;
   url: string;
   instagramHandle?: string;
-  githubUrl?: string;
   category: string;
   subCategory?: string;
-  followers: number;
-  bio: string;
-  email: string;
-  phone: string;
-  whatsapp: string;
-  website: string;
-  location: string;
-  lastActive: string;
-  isCOD: boolean;
-  paymentMethods: string[];
-  contactValidation: ContactValidation;
-  risk: RiskAssessment;
-  revenue: {
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  website?: string;
+  location?: string;
+  isCOD?: boolean;
+  paymentMethods?: string[];
+  contactValidation?: ContactValidation;
+  contactConfidence?: ContactConfidence;
+  contactabilityLevel?: ContactabilityLevel;
+  risk?: RiskAssessment;
+  evidence?: Array<EvidenceSource | string>;
+  scripts?: {
+    arabic: string;
+    english: string;
+    whatsapp: string;
+    instagram: string;
+  };
+  otherProfiles?: { platform: string; url: string }[];
+  revenue?: {
     monthly: number;
     annual: number;
   };
-  pricing: {
+  pricing?: {
     setupFee: number;
     transactionRate: string;
     settlementCycle: string;
   };
-  roi: {
+  roi?: {
     feeSavings: number;
     bnplUplift: number;
     cashFlowGain: number;
     totalMonthlyGain: number;
     annualImpact: number;
   };
-  scripts: {
+  foundDate?: string;
+  analyzedAt?: string;
+  contactScore?: number;
+  fitScore?: number;
+  fitSignals?: string[];
+  confidenceScore?: number;
+  duplicateReason?: string;
+  status?: string;
+  notes?: string;
+  next_action?: string;
+  follow_up_date?: string;
+  outcome?: string;
+}
+
+export interface LeadDTO {
+  id: string;
+  businessName: string;
+  platform: string;
+  url: string;
+  instagramHandle?: string;
+  category?: string;
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  website?: string;
+  status: LeadStatus;
+  notes?: string;
+  next_action?: string;
+  follow_up_date?: string;
+  outcome?: string;
+  contactConfidence?: ContactConfidence;
+  fitSignals?: string[];
+  fitScore?: number;
+  contactScore?: number;
+  confidenceScore?: number;
+  duplicateReason?: string;
+  evidence_json?: string;
+  metadata_json?: string;
+  risk?: RiskAssessment;
+  scripts?: {
     arabic: string;
     english: string;
     whatsapp: string;
     instagram: string;
   };
-  otherProfiles: { platform: string; url: string }[];
-  registrationInfo?: string;
-  tradeLicense?: string;
-  foundDate: string;
-  searchSessionId: string;
-  analyzedAt: string;
-  contactScore?: number;
-  fitScore?: number;
-  confidenceScore?: number;
-  duplicateReason?: string;
-  status?: string;
 }
 
 export interface SearchParams {
