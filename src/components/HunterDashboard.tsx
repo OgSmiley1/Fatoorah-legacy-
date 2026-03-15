@@ -2,9 +2,9 @@ import React from 'react';
 import { 
   Search, MapPin, Filter, Loader2, Download, Save, Shield, 
   Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send, Eye, EyeOff
+  X, TrendingUp, Send, Eye, EyeOff, Wifi, WifiOff
 } from 'lucide-react';
-import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
+import { Merchant, SearchParams, SearchHistory, LeadStatus, AiSourceStatus } from '../types';
 import { apiClient } from '../services/apiClient';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
@@ -78,6 +78,8 @@ export const HunterDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const [showDuplicates, setShowDuplicates] = React.useState(false);
+  const [aiSources, setAiSources] = React.useState<AiSourceStatus[]>([]);
+  const [sourceCounts, setSourceCounts] = React.useState<Record<string, number>>({});
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
@@ -101,8 +103,16 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
+  const refreshAiStatus = async () => {
+    try {
+      const sources = await apiClient.getAiStatus();
+      setAiSources(sources);
+    } catch {}
+  };
+
   React.useEffect(() => {
     refreshStats();
+    refreshAiStatus();
   }, []);
 
   React.useEffect(() => {
@@ -134,28 +144,17 @@ export const HunterDashboard: React.FC = () => {
     if (!searchKeywords) return;
     
     setLoading(true);
+    setShowDuplicates(false);
     try {
       const searchParams = overrideKeywords 
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      let results: Merchant[] = [];
+      const result = await apiClient.hunt(searchParams);
+      const results = result.merchants || [];
       
-      console.log("Starting AI Search...");
-      const aiResults = await apiClient.aiSearchMerchants(searchParams);
-      
-      if (aiResults.length > 0) {
-        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await apiClient.ingestMerchants(aiResults, searchKeywords, params.location);
-        results = ingestResult.merchants;
-      }
-
-      if (results.length < (params.maxResults || 10) / 2) {
-        console.log("Falling back to server-side scraper...");
-        const scraperResults = await apiClient.searchMerchants(searchParams);
-        const seenIds = new Set(results.map(r => r.id));
-        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
-        results = [...results, ...newScraperResults];
+      if (result.sourceCounts) {
+        setSourceCounts(result.sourceCounts);
       }
 
       setMerchants(results);
@@ -199,6 +198,7 @@ export const HunterDashboard: React.FC = () => {
   const duplicateMerchants = merchants.filter(m => m.status === 'DUPLICATE');
   const displayMerchants = showDuplicates ? merchants : newMerchants;
   const newThisSession = newMerchants.length;
+  const activeSources = aiSources.filter(s => s.available).length;
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
@@ -215,6 +215,22 @@ export const HunterDashboard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-lg border border-slate-700">
+              {aiSources.map(source => (
+                <div key={source.name} className="group relative">
+                  <div className={cn(
+                    "w-2 h-2 rounded-full",
+                    source.available ? "bg-emerald-400" : "bg-slate-600"
+                  )} />
+                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-800 text-[9px] text-slate-300 rounded border border-slate-700 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
+                    {source.name}: {source.reason}
+                  </div>
+                </div>
+              ))}
+              <span className="text-[9px] font-bold text-slate-500 uppercase ml-1">
+                {activeSources}/{aiSources.length} AI
+              </span>
+            </div>
             <button
               onClick={() => setShowTelegram(true)}
               className={cn(
@@ -363,6 +379,28 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
 
+            {aiSources.length > 0 && (
+              <div className="space-y-4">
+                <h3 className="mission-control-label">AI Search Sources</h3>
+                <div className="space-y-2">
+                  {aiSources.map(source => (
+                    <div key={source.name} className="flex items-center justify-between p-2 rounded-lg bg-slate-950/50 border border-slate-800">
+                      <div className="flex items-center gap-2">
+                        <div className={cn(
+                          "w-2 h-2 rounded-full",
+                          source.available ? "bg-emerald-400" : "bg-slate-600"
+                        )} />
+                        <span className="text-[10px] font-bold text-slate-300 uppercase">{source.name}</span>
+                      </div>
+                      <span className="text-[8px] font-bold text-slate-500 uppercase">
+                        {source.available ? 'Active' : 'Off'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {searchHistory.length > 0 && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
@@ -456,21 +494,35 @@ export const HunterDashboard: React.FC = () => {
                 </div>
 
                 {merchants.length > 0 && (
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
-                        {newMerchants.length} new leads
-                      </span>
-                      {duplicateMerchants.length > 0 && (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
+                          {newMerchants.length} new leads
+                        </span>
+                        {Object.keys(sourceCounts).length > 0 && (
+                          <span className="text-[9px] font-bold text-slate-500 uppercase">
+                            via {Object.entries(sourceCounts).map(([k, v]) => `${k}(${v})`).join(' + ')}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {duplicateMerchants.length > 0 && (
+                      <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
+                        <Shield size={14} className="text-slate-500" />
+                        <span className="text-[10px] font-bold text-slate-400">
+                          {duplicateMerchants.length} previously found merchants hidden
+                        </span>
                         <button
                           onClick={() => setShowDuplicates(!showDuplicates)}
-                          className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 hover:text-slate-300 uppercase tracking-widest transition-colors"
+                          className="flex items-center gap-1.5 text-[10px] font-bold text-blue-400 hover:text-blue-300 uppercase tracking-widest transition-colors ml-auto"
                         >
                           {showDuplicates ? <EyeOff size={12} /> : <Eye size={12} />}
-                          {duplicateMerchants.length} duplicates {showDuplicates ? 'shown' : 'hidden'}
+                          {showDuplicates ? 'Hide' : 'Show'}
                         </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -538,6 +590,10 @@ export const HunterDashboard: React.FC = () => {
           <div className="flex items-center gap-1.5">
             <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
             Deduplication Active
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className={cn("w-1.5 h-1.5 rounded-full", activeSources > 1 ? "bg-violet-500" : "bg-slate-600")} />
+            {activeSources} AI Sources
           </div>
         </div>
         <div className="flex items-center gap-4">

@@ -9,6 +9,7 @@ import path from "path";
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
 import { huntMerchants } from "./server/searchService";
+import { getAiStatus } from "./server/aiSearchService";
 import { logger } from "./server/logger";
 
 interface DbCountRow {
@@ -35,6 +36,9 @@ interface DbLeadRow {
   contactability_score: number | null;
   confidence_score: number | null;
   metadata_json: string | null;
+  discovery_source: string | null;
+  has_payment_gateway: number | null;
+  detected_gateways: string | null;
   [key: string]: unknown;
 }
 
@@ -46,6 +50,8 @@ interface HuntMerchant {
   contactScore: number;
   confidenceScore: number;
   contactConfidence?: { overall: string };
+  revenueEstimate?: { tier: string; setupFeeMin: number; setupFeeMax: number };
+  discoverySource?: string;
   phone?: string;
   whatsapp?: string;
   url?: string;
@@ -82,6 +88,28 @@ async function startServer() {
 
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
+  app.get("/api/ai-status", async (req, res) => {
+    try {
+      const status = await getAiStatus();
+      res.json({ sources: status });
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
+  app.post("/api/hunt", async (req, res) => {
+    const { keywords, location, maxResults } = req.body;
+    try {
+      const result = await huntMerchants({ keywords, location, maxResults });
+      io.emit('hunt-completed', { query: `${keywords} ${location}`, merchants: result.merchants });
+      res.json(result);
+    } catch (error: unknown) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      res.status(500).json({ error: errMsg });
+    }
+  });
+
   app.post("/api/search", async (req, res) => {
     const { keywords, location, maxResults } = req.body;
     try {
@@ -90,67 +118,6 @@ async function startServer() {
     } catch (error: unknown) {
       const errMsg = error instanceof Error ? error.message : String(error);
       res.status(500).json({ error: errMsg });
-    }
-  });
-
-  app.post("/api/ai-search", async (req, res) => {
-    const { keywords, location, maxResults } = req.body;
-    const apiKey = process.env.GEMINI_API_KEY;
-    
-    if (!apiKey) {
-      return res.json({ merchants: [], message: 'AI search unavailable: no API key configured' });
-    }
-
-    try {
-      const { GoogleGenAI, Type } = await import('@google/genai');
-      const ai = new GoogleGenAI({ apiKey });
-      
-      const prompt = `Find ${maxResults || 10} real, active merchants in ${location} related to "${keywords}". 
-      Focus on GCC-based small businesses selling through social media (Instagram, WhatsApp, TikTok).
-      Find their business name, platform, URL, and contact details (phone, email, instagram handle).
-      Include Arabic business names when relevant. Only return real businesses you can find evidence for.`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }],
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                businessName: { type: Type.STRING },
-                platform: { type: Type.STRING, enum: ['instagram', 'facebook', 'tiktok', 'website', 'telegram'] },
-                url: { type: Type.STRING },
-                instagramHandle: { type: Type.STRING },
-                phone: { type: Type.STRING },
-                email: { type: Type.STRING },
-                category: { type: Type.STRING },
-                evidence: { type: Type.STRING }
-              },
-              required: ['businessName', 'platform', 'url']
-            }
-          }
-        }
-      });
-
-      const text = response.text;
-      if (!text) return res.json({ merchants: [] });
-      
-      const merchants = JSON.parse(text) as Array<Record<string, string>>;
-      const mapped = merchants.map((m) => ({
-        ...m,
-        whatsapp: m.phone,
-        evidence: [m.evidence || "Found via AI search"]
-      }));
-
-      res.json({ merchants: mapped });
-    } catch (error: unknown) {
-      const errMsg = error instanceof Error ? error.message : String(error);
-      logger.error('ai_search_failed', { error: errMsg });
-      res.json({ merchants: [], error: errMsg });
     }
   });
 
@@ -171,7 +138,7 @@ async function startServer() {
     let query = `
       SELECT l.*, m.*, l.id as lead_id, l.status as lead_status,
              l.notes as lead_notes, l.next_action, l.follow_up_date, l.outcome,
-             m.metadata_json
+             m.metadata_json, m.discovery_source, m.has_payment_gateway, m.detected_gateways
       FROM leads l 
       JOIN merchants m ON l.merchant_id = m.id
     `;
@@ -188,11 +155,21 @@ async function startServer() {
     const leads = rawLeads.map(lead => {
       let contactConfidence = null;
       let fitSignals: string[] = [];
+      let revenueEstimate = null;
+      let scripts = null;
       try {
         const meta = JSON.parse(lead.metadata_json || '{}');
         contactConfidence = meta.contactConfidence || null;
         fitSignals = meta.fitSignals || [];
+        revenueEstimate = meta.revenueEstimate || null;
+        scripts = meta.scripts || null;
       } catch {}
+
+      let detectedGateways: string[] = [];
+      try {
+        detectedGateways = lead.detected_gateways ? JSON.parse(lead.detected_gateways) : [];
+      } catch {}
+
       return {
         ...lead,
         id: lead.lead_id,
@@ -200,6 +177,8 @@ async function startServer() {
         notes: lead.lead_notes,
         contactConfidence,
         fitSignals,
+        revenueEstimate,
+        scripts,
         businessName: lead.business_name,
         instagramHandle: lead.instagram_handle,
         fitScore: lead.myfatoorah_fit_score,
@@ -207,6 +186,9 @@ async function startServer() {
         confidenceScore: lead.confidence_score,
         platform: lead.source_platform,
         url: lead.source_url,
+        discoverySource: lead.discovery_source,
+        hasPaymentGateway: !!lead.has_payment_gateway,
+        detectedGateways,
       };
     });
     res.json(leads);
@@ -317,7 +299,7 @@ async function startServer() {
               continue;
             }
 
-            await sendTelegram(chatId, `Starting server-side hunt for "${query}"...`);
+            await sendTelegram(chatId, `Starting multi-AI hunt for "${query}"...`);
             
             try {
               const parts = query.split(' ');
@@ -332,18 +314,22 @@ async function startServer() {
               if (newMerchants.length === 0) {
                 await sendTelegram(chatId, `No new merchants found for "${query}".`);
               } else {
-                await sendTelegram(chatId, `Found ${newMerchants.length} new leads for "${query}":`);
+                const sourceInfo = result.sourceCounts ? Object.entries(result.sourceCounts).map(([k, v]) => `${k}: ${v}`).join(', ') : '';
+                await sendTelegram(chatId, `Found ${newMerchants.length} new leads for "${query}":\nSources: ${sourceInfo}`);
                 for (const m of newMerchants) {
                   const contactConf = m.contactConfidence?.overall || 'N/A';
+                  const revenue = m.revenueEstimate ? `${m.revenueEstimate.tier} ($${m.revenueEstimate.setupFeeMin}-$${m.revenueEstimate.setupFeeMax})` : 'N/A';
                   const msg = `
 ${m.businessName}
 Category: ${m.category}
 IG: @${m.instagramHandle || 'N/A'}
 Fit Score: ${m.fitScore}/100
 Contact: ${contactConf}
+Revenue Tier: ${revenue}
+Source: ${m.discoverySource || 'scraper'}
 Phone: ${m.phone || 'N/A'}
 WhatsApp: ${m.whatsapp || 'N/A'}
-Source: ${m.url}
+URL: ${m.url}
                   `.trim();
                   await sendTelegram(chatId, msg);
                 }
@@ -372,7 +358,7 @@ Source: ${m.url}
 
             const headers = [
               "Business Name", "Category", "Website", "IG Handle", 
-              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score", "Contact Quality"
+              "Email", "Phone", "WhatsApp", "Confidence", "Fit Score", "Contact Score", "Contact Quality", "Revenue Tier", "Discovery Source"
             ];
             
             const escapeCsv = (val: unknown) => {
@@ -385,13 +371,15 @@ Source: ${m.url}
 
             const rows = leads.map(m => {
               let contactQuality = 'UNKNOWN';
+              let revenueTier = 'N/A';
               try {
                 const meta = JSON.parse(m.metadata_json || '{}');
                 contactQuality = meta.contactConfidence?.overall || 'UNKNOWN';
+                revenueTier = meta.revenueEstimate?.tier || 'N/A';
               } catch {}
               return [
                 m.business_name, m.category, m.website, m.instagram_handle,
-                m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score, contactQuality
+                m.email, m.phone, m.whatsapp, m.confidence_score, m.myfatoorah_fit_score, m.contactability_score, contactQuality, revenueTier, m.discovery_source
               ].map(escapeCsv).join(",");
             });
 
@@ -410,7 +398,9 @@ Source: ${m.url}
             const stats = db.prepare("SELECT COUNT(*) as count FROM merchants").get() as DbCountRow;
             const newLeads = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get() as DbCountRow;
             const contacted = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'CONTACTED'").get() as DbCountRow;
-            await sendTelegram(chatId, `WIZARD STATUS\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}\nContacted: ${contacted.count}`);
+            const aiStatus = await getAiStatus();
+            const activeSources = aiStatus.filter(s => s.available).map(s => s.name).join(', ');
+            await sendTelegram(chatId, `WIZARD STATUS\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}\nContacted: ${contacted.count}\n\nActive AI Sources: ${activeSources || 'DuckDuckGo only'}`);
           } else if (text === '/recent') {
             const query = `
               SELECT m.*, l.status as lead_status, m.metadata_json
@@ -430,12 +420,12 @@ Source: ${m.url}
                   const meta = JSON.parse(m.metadata_json || '{}');
                   contactQuality = meta.contactConfidence?.overall || 'UNKNOWN';
                 } catch {}
-                const msg = `${m.business_name} (${m.lead_status})\n${m.category}\nFit: ${m.myfatoorah_fit_score}/100 | Contact: ${contactQuality}`;
+                const msg = `${m.business_name} (${m.lead_status})\n${m.category}\nFit: ${m.myfatoorah_fit_score}/100 | Contact: ${contactQuality}\nSource: ${m.discovery_source || 'scraper'}`;
                 await sendTelegram(chatId, msg);
               }
             }
           } else if (text === '/start') {
-            await sendTelegram(chatId, "Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start discovery\n/status - View DB stats\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
+            await sendTelegram(chatId, "Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start multi-AI discovery\n/status - View DB stats + AI sources\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
           }
         }
       }

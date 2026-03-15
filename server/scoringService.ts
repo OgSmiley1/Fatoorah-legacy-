@@ -22,6 +22,15 @@ export interface FitSignals {
   rationale: string[];
 }
 
+export interface RevenueEstimate {
+  monthlyRevenue: number;
+  annualRevenue: number;
+  tier: string;
+  setupFeeMin: number;
+  setupFeeMax: number;
+  transactionRate: string;
+}
+
 interface MerchantInput {
   businessName?: string;
   platform?: string;
@@ -33,6 +42,7 @@ interface MerchantInput {
   website?: string;
   url?: string;
   location?: string;
+  detectedGateways?: string[];
 }
 
 export function computeFitScore(merchant: MerchantInput): FitSignals {
@@ -58,6 +68,11 @@ export function computeFitScore(merchant: MerchantInput): FitSignals {
   if (noPaymentGateway) {
     score += 10;
     rationale.push('No existing payment gateway detected');
+  }
+
+  if (merchant.detectedGateways && merchant.detectedGateways.length > 0) {
+    score -= 20;
+    rationale.push(`Has payment gateway: ${merchant.detectedGateways.join(', ')}`);
   }
 
   const socialSelling = /shop|متجر|بيع|للبيع|for sale|prices|أسعار|تسوق|collection|new arrival/.test(snippet);
@@ -92,7 +107,7 @@ export function computeFitScore(merchant: MerchantInput): FitSignals {
     rationale.push('Active online presence');
   }
 
-  score = Math.min(score, 100);
+  score = Math.max(0, Math.min(score, 100));
 
   return {
     platform,
@@ -143,22 +158,59 @@ export function computeContactScore(m: MerchantInput): number {
 export function computeContactConfidence(m: MerchantInput): ContactConfidence {
   const evidence = ((m.evidence || []).join(' ')).toLowerCase();
 
-  function fieldConfidence(value: string | null | undefined, fieldName: string): ContactConfidenceLevel {
+  const GCC_CODES = ['965', '971', '973', '974', '968', '966'];
+  const GENERIC_EMAIL_DOMAINS = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'live.com', 'aol.com', 'icloud.com', 'mail.com'];
+
+  function phoneConfidence(value: string | null | undefined): ContactConfidenceLevel {
     if (!value) return 'MISSING';
-    if (evidence.includes(value.toLowerCase())) return 'VERIFIED';
-    if (value.length > 3) return 'LIKELY';
+    const cleaned = value.replace(/[\s\-\(\)\+]/g, '');
+    const hasGccCode = GCC_CODES.some(code => cleaned.startsWith(code) || value.startsWith(`+${code}`));
+    if (hasGccCode && evidence.includes(value.replace('+', ''))) return 'VERIFIED';
+    if (hasGccCode) return 'LIKELY';
+    if (evidence.includes(value.toLowerCase())) return 'LIKELY';
+    if (cleaned.length >= 7) return 'WEAK';
     return 'WEAK';
   }
 
-  const phone = fieldConfidence(m.phone, 'phone');
-  const whatsapp = fieldConfidence(m.whatsapp, 'whatsapp');
-  const emailConf = fieldConfidence(m.email, 'email');
-  const ig = fieldConfidence(m.instagramHandle, 'instagram');
+  function whatsappConfidence(value: string | null | undefined): ContactConfidenceLevel {
+    if (!value) return 'MISSING';
+    const waLinkMatch = evidence.match(/wa\.me\/(\+?\d{7,15})/);
+    if (waLinkMatch) return 'VERIFIED';
+    if (/واتساب|whatsapp/i.test(evidence) && evidence.includes(value.replace('+', ''))) return 'VERIFIED';
+    const cleaned = value.replace(/[\s\-\(\)\+]/g, '');
+    const hasGccCode = GCC_CODES.some(code => cleaned.startsWith(code) || value.startsWith(`+${code}`));
+    if (hasGccCode) return 'LIKELY';
+    if (cleaned.length >= 7) return 'WEAK';
+    return 'WEAK';
+  }
+
+  function emailConfidence(value: string | null | undefined): ContactConfidenceLevel {
+    if (!value) return 'MISSING';
+    const domain = value.split('@')[1]?.toLowerCase();
+    if (!domain) return 'WEAK';
+    if (evidence.includes(value.toLowerCase())) {
+      return GENERIC_EMAIL_DOMAINS.includes(domain) ? 'LIKELY' : 'VERIFIED';
+    }
+    return GENERIC_EMAIL_DOMAINS.includes(domain) ? 'WEAK' : 'LIKELY';
+  }
+
+  function igConfidence(value: string | null | undefined): ContactConfidenceLevel {
+    if (!value) return 'MISSING';
+    const url = m.url || '';
+    if (url.includes('instagram.com') && url.includes(value.toLowerCase())) return 'VERIFIED';
+    if (evidence.includes(value.toLowerCase())) return 'LIKELY';
+    if (value.length > 2) return 'WEAK';
+    return 'WEAK';
+  }
+
+  const phone = phoneConfidence(m.phone);
+  const whatsapp = whatsappConfidence(m.whatsapp);
+  const emailConf = emailConfidence(m.email);
+  const ig = igConfidence(m.instagramHandle);
 
   const levels = [phone, whatsapp, emailConf, ig];
   const verifiedCount = levels.filter(l => l === 'VERIFIED').length;
   const likelyCount = levels.filter(l => l === 'LIKELY').length;
-  const missingCount = levels.filter(l => l === 'MISSING').length;
 
   let overall: ContactabilityLevel = 'NONE';
   if (verifiedCount >= 2 || (verifiedCount >= 1 && likelyCount >= 1)) overall = 'HIGH';
@@ -174,4 +226,66 @@ export function computeConfidence(m: MerchantInput): number {
   if (m.evidence && m.evidence.length > 0) score += 30;
   if (m.phone || m.email) score += 30;
   return score;
+}
+
+export function estimateRevenue(merchant: MerchantInput, fitSignals: FitSignals): RevenueEstimate {
+  const snippet = ((merchant.evidence || []).join(' ') + ' ' + (merchant.businessName || '')).toLowerCase();
+  
+  let revenueScore = 0;
+
+  const luxurySignals = /luxury|فاخر|premium|exclusive|حصري|designer|limited edition|haute couture|bespoke/i;
+  if (luxurySignals.test(snippet)) revenueScore += 3;
+
+  const priceHighSignals = /\b\d{3,4}\s*(?:aed|sar|kwd|bhd|qar|omr)\b|\bدينار\b|\bdinar\b/i;
+  if (priceHighSignals.test(snippet)) revenueScore += 2;
+
+  const followerSignals = /\b\d{2,3}k\s*(?:followers|متابع)/i;
+  if (followerSignals.test(snippet)) revenueScore += 2;
+
+  const highFollowerSignals = /\b\d{3,}k\s*(?:followers|متابع)|million\s*followers/i;
+  if (highFollowerSignals.test(snippet)) revenueScore += 3;
+
+  if (fitSignals.gccLocation) revenueScore += 1;
+  if (merchant.website) revenueScore += 1;
+  if (merchant.platform === 'instagram' || merchant.platform === 'tiktok') revenueScore += 1;
+  if (fitSignals.codSignal && !merchant.website) revenueScore -= 1;
+
+  let tier: string;
+  let monthlyRevenue: number;
+  let annualRevenue: number;
+  let setupFeeMin: number;
+  let setupFeeMax: number;
+  let transactionRate: string;
+
+  if (revenueScore >= 8) {
+    tier = 'High-Volume';
+    monthlyRevenue = 1000000;
+    annualRevenue = 12000000;
+    setupFeeMin = 6000;
+    setupFeeMax = 10000;
+    transactionRate = '1.8%';
+  } else if (revenueScore >= 5) {
+    tier = 'Medium-High';
+    monthlyRevenue = 500000;
+    annualRevenue = 6000000;
+    setupFeeMin = 4500;
+    setupFeeMax = 6000;
+    transactionRate = '2.0%';
+  } else if (revenueScore >= 3) {
+    tier = 'Small-Medium';
+    monthlyRevenue = 150000;
+    annualRevenue = 1800000;
+    setupFeeMin = 2500;
+    setupFeeMax = 4500;
+    transactionRate = '2.5%';
+  } else {
+    tier = 'Micro/New';
+    monthlyRevenue = 30000;
+    annualRevenue = 360000;
+    setupFeeMin = 1000;
+    setupFeeMax = 2500;
+    transactionRate = '2.75%';
+  }
+
+  return { monthlyRevenue, annualRevenue, tier, setupFeeMin, setupFeeMax, transactionRate };
 }

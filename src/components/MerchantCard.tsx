@@ -3,8 +3,8 @@ import { Merchant, ContactConfidenceLevel, LeadStatus } from '../types';
 import { 
   Mail, Phone, MessageCircle, Shield, TrendingUp, 
   Copy, CheckCircle2, Loader2, 
-  Globe, Zap,
-  Send, Instagram, Save, Info
+  Globe, Zap, DollarSign,
+  Send, Instagram, Save, Info, CreditCard, Sparkles
 } from 'lucide-react';
 import { telegramService } from '../services/telegramService';
 import { generateOutreachScripts } from '../utils/scripts';
@@ -54,6 +54,15 @@ function ContactabilityBadge({ level }: { level?: string }) {
     </span>
   );
 }
+
+const sourceColors: Record<string, string> = {
+  scraper: 'bg-slate-700/50 text-slate-300 border-slate-600',
+  perplexity: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
+  grok: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
+  gemini: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+  ollama: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+  manual: 'bg-slate-700/50 text-slate-300 border-slate-600',
+};
 
 export const MerchantCard: React.FC<MerchantCardProps> = ({ 
   merchant, 
@@ -106,6 +115,9 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   };
 
   const cc = merchant.contactConfidence;
+  const rev = merchant.revenueEstimate;
+  const gateways = merchant.detectedGateways || [];
+  const source = merchant.discoverySource || 'scraper';
 
   const fitWhyBlurb = React.useMemo(() => {
     const signals = merchant.fitSignals || [];
@@ -125,10 +137,15 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
         (merchant.fitScore || 0) >= 50 ? "border-l-amber-500" : "border-l-slate-800"
       )}
     >
+      {merchant.status === 'DUPLICATE' && (
+        <div className="bg-slate-800/50 px-4 py-1.5 text-center">
+          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Seen Before</span>
+        </div>
+      )}
       <div className="p-6">
         <div className="flex justify-between items-start mb-6">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
               <h3 className="text-xl font-bold text-slate-100 truncate">
                 {merchant.businessName}
               </h3>
@@ -142,6 +159,9 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   COD
                 </span>
               )}
+              <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", sourceColors[source] || sourceColors.scraper)}>
+                {source}
+              </span>
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">
@@ -163,7 +183,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        <div className="grid grid-cols-3 gap-3 mb-4">
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50 text-center">
             <p className="mission-control-label mb-1">Fit Score</p>
             <p className={cn("text-xl font-black", getScoreColor(merchant.fitScore || 0))}>
@@ -183,6 +203,46 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             </p>
           </div>
         </div>
+
+        {rev && (
+          <div className="mb-4 p-3 bg-emerald-500/5 rounded-xl border border-emerald-500/10">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <DollarSign size={14} className="text-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-400 uppercase">{rev.tier}</span>
+              </div>
+              <span className="text-[10px] font-bold text-slate-400">
+                AED {(rev.monthlyRevenue / 1000).toFixed(0)}K/mo est.
+              </span>
+            </div>
+            <div className="flex items-center gap-4 mt-2">
+              <span className="text-[9px] text-slate-400">
+                Setup: ${rev.setupFeeMin.toLocaleString()}–${rev.setupFeeMax.toLocaleString()}
+              </span>
+              <span className="text-[9px] text-slate-400">
+                Rate: {rev.transactionRate}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {gateways.length > 0 && (
+          <div className="mb-4 flex flex-wrap gap-1.5">
+            <CreditCard size={12} className="text-rose-400 mt-0.5" />
+            {gateways.map(gw => (
+              <span key={gw} className="text-[8px] font-bold px-1.5 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20 uppercase">
+                Has {gw}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {gateways.length === 0 && merchant.status !== 'DUPLICATE' && (
+          <div className="mb-4 flex items-center gap-1.5">
+            <Sparkles size={12} className="text-emerald-400" />
+            <span className="text-[9px] font-bold text-emerald-400 uppercase">No payment gateway detected — prime target</span>
+          </div>
+        )}
 
         {fitWhyBlurb && (
           <div className="mb-4 p-2.5 bg-blue-500/5 rounded-lg border border-blue-500/10">
@@ -374,6 +434,17 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
                     {scripts.english}
+                  </p>
+                </div>
+                <div className="pt-4 border-t border-slate-800">
+                  <div className="flex justify-between items-center mb-2">
+                    <h5 className="mission-control-label">Instagram DM</h5>
+                    <button onClick={() => copyToClipboard(scripts.instagram, 'ig')} className="text-blue-400 hover:text-blue-300">
+                      {copied === 'ig' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    {scripts.instagram}
                   </p>
                 </div>
               </div>

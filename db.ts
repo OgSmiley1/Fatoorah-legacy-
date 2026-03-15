@@ -26,7 +26,10 @@ db.exec(`
     contactability_score REAL DEFAULT 0,
     myfatoorah_fit_score REAL DEFAULT 0,
     evidence_json TEXT,
-    metadata_json TEXT
+    metadata_json TEXT,
+    discovery_source TEXT,
+    has_payment_gateway INTEGER DEFAULT 0,
+    detected_gateways TEXT
   );
 
   CREATE TABLE IF NOT EXISTS leads (
@@ -72,5 +75,18 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
   CREATE INDEX IF NOT EXISTS idx_leads_merchant_id ON leads(merchant_id);
 `);
+
+function safeAddColumn(table: string, column: string, type: string) {
+  try {
+    const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
+    if (!cols.some(c => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  } catch {}
+}
+
+safeAddColumn('merchants', 'discovery_source', 'TEXT');
+safeAddColumn('merchants', 'has_payment_gateway', 'INTEGER DEFAULT 0');
+safeAddColumn('merchants', 'detected_gateways', 'TEXT');
 
 export default db;

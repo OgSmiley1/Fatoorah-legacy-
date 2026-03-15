@@ -3,6 +3,7 @@ export type ValidationStatus = 'VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
 export type ExclusionStatus = 'ACTIVE' | 'EXCLUDED' | 'BLACKLISTED';
 export type ContactConfidenceLevel = 'VERIFIED' | 'LIKELY' | 'WEAK' | 'MISSING';
 export type ContactabilityLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+export type DiscoverySource = 'scraper' | 'perplexity' | 'grok' | 'gemini' | 'ollama' | 'manual';
 
 export interface ContactValidation {
   status: ValidationStatus;
@@ -24,6 +25,15 @@ export interface RiskAssessment {
   emoji: string;
   color: string;
   factors: string[];
+}
+
+export interface RevenueEstimate {
+  monthlyRevenue: number;
+  annualRevenue: number;
+  tier: string;
+  setupFeeMin: number;
+  setupFeeMax: number;
+  transactionRate: string;
 }
 
 export interface EvidenceSource {
@@ -71,6 +81,12 @@ export interface SearchRun {
   createdAt: string;
 }
 
+export interface AiSourceStatus {
+  name: string;
+  available: boolean;
+  reason: string;
+}
+
 export interface Merchant {
   id: string;
   businessName: string;
@@ -102,6 +118,7 @@ export interface Merchant {
     monthly: number;
     annual: number;
   };
+  revenueEstimate?: RevenueEstimate;
   pricing?: {
     setupFee: number;
     transactionRate: string;
@@ -114,6 +131,9 @@ export interface Merchant {
     totalMonthlyGain: number;
     annualImpact: number;
   };
+  discoverySource?: DiscoverySource;
+  detectedGateways?: string[];
+  hasPaymentGateway?: boolean;
   foundDate?: string;
   analyzedAt?: string;
   contactScore?: number;
@@ -153,6 +173,9 @@ export interface LeadDTO {
   evidence_json?: string;
   metadata_json?: string;
   risk?: RiskAssessment;
+  discoverySource?: DiscoverySource;
+  revenueEstimate?: RevenueEstimate;
+  detectedGateways?: string[];
   scripts?: {
     arabic: string;
     english: string;

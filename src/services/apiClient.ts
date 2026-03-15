@@ -1,14 +1,10 @@
-import { Merchant, SearchParams, LeadStatus } from "../types";
+import { Merchant, SearchParams, LeadStatus, AiSourceStatus } from "../types";
 
-interface SearchResult {
+interface HuntResult {
   merchants: Merchant[];
   runId?: string;
   newLeadsCount?: number;
-}
-
-interface IngestResult {
-  merchants: Merchant[];
-  newLeadsCount: number;
+  sourceCounts?: Record<string, number>;
 }
 
 interface StatsResponse {
@@ -38,34 +34,37 @@ interface LeadUpdate {
 }
 
 export const apiClient = {
-  async aiSearchMerchants(params: SearchParams): Promise<Merchant[]> {
+  async hunt(params: SearchParams): Promise<HuntResult> {
+    const response = await fetch('/api/hunt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keywords: params.keywords,
+        location: params.location,
+        maxResults: params.maxResults
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Hunt failed');
+    }
+
+    return response.json();
+  },
+
+  async getAiStatus(): Promise<AiSourceStatus[]> {
     try {
-      const response = await fetch('/api/ai-search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          keywords: params.keywords,
-          location: params.location,
-          maxResults: params.maxResults
-        })
-      });
-
-      if (!response.ok) {
-        console.warn('AI search request failed');
-        return [];
-      }
-
-      const result: SearchResult = await response.json();
-      return result.merchants || [];
-    } catch (error) {
-      console.error("AI Search error:", error);
+      const response = await fetch('/api/ai-status');
+      const data = await response.json() as { sources: AiSourceStatus[] };
+      return data.sources || [];
+    } catch {
       return [];
     }
   },
 
   async searchMerchants(params: SearchParams): Promise<Merchant[]> {
     try {
-      const response = await fetch('/api/search', {
+      const response = await fetch('/api/hunt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -79,7 +78,7 @@ export const apiClient = {
         throw new Error('Failed to search merchants');
       }
 
-      const result: SearchResult = await response.json();
+      const result: HuntResult = await response.json();
       return result.merchants;
     } catch (error) {
       console.error("Search error:", error);
@@ -87,7 +86,7 @@ export const apiClient = {
     }
   },
 
-  async ingestMerchants(merchants: Merchant[], query: string, location: string): Promise<IngestResult> {
+  async ingestMerchants(merchants: Merchant[], query: string, location: string): Promise<{ merchants: Merchant[]; newLeadsCount: number }> {
     const response = await fetch('/api/merchants/ingest', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
