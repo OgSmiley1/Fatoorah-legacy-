@@ -39,7 +39,7 @@ externalPort = 80
 
 [deployment]
 deploymentTarget = "vm"
-run = ["npx", "tsx", "server.ts"]
+run = ["npm", "run", "dev"]
 build = ["npm", "run", "build"]
 
 [postMerge]
