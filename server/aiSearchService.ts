@@ -219,7 +219,7 @@ export async function detectPaymentGateways(url: string): Promise<string[]> {
 
     const response = await fetch(url.startsWith('http') ? url : `https://${url}`, {
       signal: controller.signal,
-      redirect: 'manual',
+      redirect: 'follow',
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MerchantScanner/1.0)' }
     });
 
@@ -465,8 +465,10 @@ export async function searchWithScraper(params: SearchParams): Promise<MerchantC
     for (const p of phonePatterns) { const match = snippet.match(p); if (match) { phone = match[1].replace(/\s/g, ''); break; } }
     const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
     const email = emailMatch ? emailMatch[0] : null;
-    const whatsappMatch = snippet.match(/(?:واتساب|whatsapp|wa\.me)[:\s]*(\+?\d{7,15})/i);
-    const whatsapp = whatsappMatch ? whatsappMatch[1] : phone;
+    const waLinkMatch = snippet.match(/wa\.me\/(\+?\d{7,15})/i);
+    const whatsappMatch = snippet.match(/(?:واتساب|whatsapp)[:\s]*(\+?\d{7,15})/i);
+    const urlWaMatch = result.url.match(/wa\.me\/(\+?\d{7,15})/i);
+    const whatsapp = waLinkMatch?.[1] || urlWaMatch?.[1] || whatsappMatch?.[1] || phone;
     const normalizedPhone = normalizePhone(phone || '') || phone;
     const normalizedWhatsapp = normalizePhone(whatsapp || '') || whatsapp;
 

@@ -252,7 +252,7 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
             <button
-              onClick={() => exportMerchantsToExcel(merchants.length > 0 ? newMerchants : savedLeads)}
+              onClick={() => exportMerchantsToExcel(merchants.length > 0 ? merchants : savedLeads)}
               disabled={merchants.length === 0 && savedLeads.length === 0}
               className="mission-control-button mission-control-button-primary"
             >

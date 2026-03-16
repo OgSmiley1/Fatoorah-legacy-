@@ -28,10 +28,11 @@ export function exportMerchantsToExcel(merchants: Merchant[]) {
     'Detected Gateways': (m.detectedGateways || []).join(', ') || 'None',
     'Has Payment Gateway': m.hasPaymentGateway ? 'Yes' : 'No',
     'Discovery Sources': m.discoverySource || 'scraper',
+    'Fit Signals': (m.fitSignals || []).join('; '),
     'Risk Category': m.risk?.category || 'N/A',
     'Status': m.status || 'N/A',
     'First Found Date': m.foundDate ? new Date(m.foundDate).toLocaleDateString('en-GB') : 'N/A',
-    'Direct Profile Link': m.url || 'N/A'
+    'Source URL': m.url || 'N/A'
   }));
 
   const ws = XLSX.utils.json_to_sheet(data);
