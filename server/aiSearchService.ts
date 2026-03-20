@@ -549,6 +549,25 @@ export function generateEnrichedStaticScripts(merchant: {
   };
 }
 
+let ollamaChecked = false;
+let ollamaReachable = false;
+
+async function isOllamaAvailable(): Promise<boolean> {
+  if (ollamaChecked) return ollamaReachable;
+  ollamaChecked = true;
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const resp = await fetch(`${ollamaUrl}/api/tags`, { signal: controller.signal });
+    clearTimeout(timeout);
+    ollamaReachable = resp.ok;
+  } catch {
+    ollamaReachable = false;
+  }
+  return ollamaReachable;
+}
+
 export async function generateScripts(merchant: {
   businessName: string;
   platform: string;
@@ -558,73 +577,93 @@ export async function generateScripts(merchant: {
   tier?: string;
   hasPaymentGateway?: boolean;
 }): Promise<ScriptResult> {
-  const ollamaResult = await generateScriptsWithOllama(merchant);
-  if (ollamaResult) {
-    logger.info('script_generation_used', { provider: 'ollama' });
-    return ollamaResult;
+  if (await isOllamaAvailable()) {
+    const ollamaResult = await generateScriptsWithOllama(merchant);
+    if (ollamaResult) {
+      logger.info('script_generation_used', { provider: 'ollama' });
+      return ollamaResult;
+    }
   }
 
-  const groqResult = await generateScriptsWithGroq(merchant);
-  if (groqResult) return groqResult;
+  if (process.env.GROQ_API_KEY) {
+    const groqResult = await generateScriptsWithGroq(merchant);
+    if (groqResult) return groqResult;
+  }
 
-  const openRouterResult = await generateScriptsWithOpenRouter(merchant);
-  if (openRouterResult) return openRouterResult;
+  if (process.env.OPENROUTER_API_KEY) {
+    const openRouterResult = await generateScriptsWithOpenRouter(merchant);
+    if (openRouterResult) return openRouterResult;
+  }
 
   logger.info('script_generation_used', { provider: 'static_template' });
   return generateEnrichedStaticScripts(merchant);
 }
 
-export async function searchWithScraper(params: SearchParams): Promise<MerchantCandidate[]> {
-  const { search } = await import('duck-duck-scrape');
-  const { normalizePhone } = await import('./dedupService');
+async function ddgHtmlSearch(query: string): Promise<Array<{ title: string; description: string; url: string }>> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const resp = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' },
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return [];
+    const html = await resp.text();
 
-  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-  const { keywords, location, maxResults = 10 } = params;
+    const linkRe = /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+    const snippetRe = /class="result__snippet"[^>]*>([\s\S]*?)<\/[a-z]/g;
+    const links = [...html.matchAll(linkRe)];
+    const snippets = [...html.matchAll(snippetRe)];
 
-  async function safeSearch(query: string, retries = 3): Promise<Array<{ title: string; description: string; url: string }>> {
-    for (let i = 0; i <= retries; i++) {
-      try {
-        const initialDelay = i === 0 ? 2000 : 10000 * i;
-        await sleep(initialDelay + Math.random() * 3000);
-        const results = await search(query, { safeSearch: 0 });
-        return (results.results || []) as Array<{ title: string; description: string; url: string }>;
-      } catch (error: unknown) {
-        if (i === retries) return [];
-        await sleep(15000 * (i + 1) + Math.random() * 10000);
-      }
+    const results: Array<{ title: string; description: string; url: string }> = [];
+    for (let i = 0; i < links.length; i++) {
+      let rawUrl = links[i][1];
+      const uddg = rawUrl.match(/uddg=([^&]+)/);
+      const url = uddg ? decodeURIComponent(uddg[1]) : rawUrl.replace(/^\/\//, 'https://');
+      const title = links[i][2].replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').trim();
+      const description = (snippets[i] ? snippets[i][1] : '').replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').trim();
+      if (url && title) results.push({ title, description, url });
     }
+    return results;
+  } catch (err) {
+    logger.warn('ddg_html_search_failed', { query, error: String(err) });
     return [];
   }
+}
+
+export async function searchWithScraper(params: SearchParams): Promise<MerchantCandidate[]> {
+  const { normalizePhone } = await import('./dedupService');
+  const { keywords, location, maxResults = 10 } = params;
 
   function extractBusinessName(title: string): string {
     if (!title) return '';
-    const arabicPattern = /[\u0600-\u06FF]/;
-    if (arabicPattern.test(title)) {
-      let name = title.replace(/على انستقرام|على فيسبوك|على تيك توك|on Instagram|on Facebook|on TikTok/gi, '').replace(/@[\w.]+/g, '').replace(/\(.*?\)/g, '').replace(/["•·…]/g, '').trim();
-      const parts = name.split(/[\|\-–—]/);
-      name = parts[0].trim();
-      if (name.length < 2) name = title.split(/[\|\-–—\(]/)[0].trim();
-      return name;
-    }
-    let name = title.replace(/on Instagram|on Facebook|on TikTok|- YouTube|- Home/gi, '').replace(/@[\w.]+/g, '').replace(/\(.*?\)/g, '').trim();
+    let name = title
+      .replace(/[\u200E\u200F\u200B\u200C\u200D\uFEFF]/g, '')
+      .replace(/on Instagram|on Facebook|on TikTok|Instagram photos and videos|Instagram|Facebook|TikTok|- YouTube|- Home/gi, '')
+      .replace(/على انستقرام|على فيسبوك|على تيك توك/gi, '')
+      .replace(/@[\w.]+/g, '')
+      .replace(/\(.*?\)/g, '')
+      .replace(/["•·…:]/g, '')
+      .trim();
     const parts = name.split(/[\|\-–—]/);
     name = parts[0].trim();
+    if (name.length < 2) name = title.split(/[\|\-–—\(]/)[0].replace(/[\u200E\u200F\u200B]/g, '').trim();
     return name.length >= 2 ? name : '';
   }
 
-  const queries: string[] = [];
-  const jitter = () => Math.random() > 0.5 ? ' ' : '';
-  queries.push(`${keywords}${jitter()} ${location} (site:instagram.com OR site:t.me) عباية متجر واتساب`);
-  queries.push(`${keywords}${jitter()} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com) shop store`);
-  queries.push(`${keywords}${jitter()} ${location} متجر واتساب "الدفع عند الاستلام" OR "كاش" OR "تواصل"`);
-  queries.push(`${keywords}${jitter()} ${location} "whatsapp" OR "contact us" OR "order" ecommerce shop`);
+  const queries = [
+    `${keywords} ${location} site:instagram.com shop store`,
+    `${keywords} ${location} site:instagram.com OR site:facebook.com OR site:tiktok.com`,
+    `${keywords} ${location} متجر واتساب "الدفع عند الاستلام" OR "كاش" OR "تواصل"`,
+    `${keywords} ${location} "whatsapp" OR "contact us" OR "order" ecommerce shop`,
+  ];
 
   const allResults: Array<{ title: string; description: string; url: string }> = [];
-  for (let i = 0; i < queries.length; i++) {
-    const results = await safeSearch(queries[i]);
-    allResults.push(...results);
-    if (i < queries.length - 1) await sleep(5000 + Math.random() * 3000);
-  }
+  const batch1 = await Promise.all([ddgHtmlSearch(queries[0]), ddgHtmlSearch(queries[1])]);
+  batch1.forEach(r => allResults.push(...r));
+  const batch2 = await Promise.all([ddgHtmlSearch(queries[2]), ddgHtmlSearch(queries[3])]);
+  batch2.forEach(r => allResults.push(...r));
 
   const uniqueResults = Array.from(new Map(allResults.map(r => [r.url, r])).values());
   const candidates: MerchantCandidate[] = [];

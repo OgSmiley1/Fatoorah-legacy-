@@ -41,16 +41,25 @@ export async function huntMerchants(params: SearchParams) {
     let newLeadsCount = 0;
 
     const seenUrls = new Set<string>();
+    const uniqueCandidates: typeof allCandidates = [];
     for (const m of allCandidates.slice(0, maxResults * 3)) {
       if (seenUrls.has(m.url)) continue;
       seenUrls.add(m.url);
+      uniqueCandidates.push(m);
+    }
+
+    const gatewayPromises = uniqueCandidates.map(m =>
+      (m.platform === 'website' || (m.url && !m.url.includes('instagram.com') && !m.url.includes('facebook.com')))
+        ? detectPaymentGateways(m.url).catch(() => [] as string[])
+        : Promise.resolve([] as string[])
+    );
+    const allGateways = await Promise.all(gatewayPromises);
+
+    for (let idx = 0; idx < uniqueCandidates.length; idx++) {
+      const m = uniqueCandidates[idx];
+      const detectedGateways = allGateways[idx];
 
       const dupCheck = checkDuplicate(m);
-
-      let detectedGateways: string[] = [];
-      if (m.platform === 'website' || (m.url && !m.url.includes('instagram.com') && !m.url.includes('facebook.com'))) {
-        detectedGateways = await detectPaymentGateways(m.url);
-      }
 
       const merchantWithGateways = { ...m, detectedGateways };
       const fitResult = computeFitScore(merchantWithGateways);

@@ -31,11 +31,11 @@ A full-stack merchant discovery and lead management engine for MyFatoorah. Disco
 - `scripts/post-merge.sh` — Post-merge setup script (npm install + DB migration)
 
 ## Key Features
-- **Multi-AI parallel search**: DuckDuckGo (always) + Perplexity + Grok + Gemini run simultaneously; results merged by URL before dedup
+- **Multi-AI parallel search**: DuckDuckGo HTML scraper (always free, no API key) + Groq + OpenRouter (free tier) + Perplexity + Grok + Gemini run simultaneously; results merged by URL before dedup. Works out-of-the-box with zero API keys via DuckDuckGo.
 - **Payment gateway detection**: Fetches merchant website (3s timeout), scans for Stripe/PayPal/Tap/Checkout.com/MyFatoorah/HyperPay/PayFort/Tabby/Tamara; reduces fit score by 20pts if found
 - **Revenue estimation**: 4 tiers (Micro <500K AED/yr $1K–$2.5K setup, Small-Med $2.5K–$4.5K, Med-High $4.5K–$6K, High-Volume $6K+)
 - **Contact confidence**: Per-field VERIFIED/LIKELY/WEAK/MISSING with GCC phone code validation, wa.me link detection, business email domain checks
-- **Personalized outreach scripts**: Ollama (free local AI) → Gemini → enriched static templates; Arabic + English + WhatsApp + Instagram DM
+- **Personalized outreach scripts**: Ollama (free local AI) → Groq → OpenRouter → enriched static templates; Arabic + English + WhatsApp + Instagram DM
 - **Net-new enforcement**: UI shows only new leads by default; collapsible duplicate banner with toggle
 - **Deduplication**: 7 layers across sessions (exact name, phone, email, IG handle, URL, domain, fuzzy name 85%)
 - **Telegram bot**: Server-side `/hunt`, `/status`, `/export`, `/recent` commands with AI source status
@@ -55,9 +55,11 @@ A full-stack merchant discovery and lead management engine for MyFatoorah. Disco
 ## Environment Variables
 - `SESSION_SECRET` — Secret for express-session (optional, has default)
 - `TELEGRAM_BOT_TOKEN` — Telegram bot token for remote control (optional)
-- `PPLX_API_KEY` — Perplexity API key for sonar web search (optional)
-- `XAI_API_KEY` — Grok/xAI API key for web search (optional)
-- `GEMINI_API_KEY` — Google Gemini API key for search + script generation (optional)
+- `GROQ_API_KEY` — Groq API key for free-tier AI search (optional, free at groq.com)
+- `OPENROUTER_API_KEY` — OpenRouter API key for free models (optional, free at openrouter.ai)
+- `PPLX_API_KEY` — Perplexity API key for sonar web search (optional, paid)
+- `XAI_API_KEY` — Grok/xAI API key for web search (optional, paid)
+- `GEMINI_API_KEY` — Google Gemini API key for search + script generation (optional, paid)
 - `OLLAMA_URL` — Local Ollama instance URL, default http://localhost:11434 (optional)
 - `OLLAMA_MODEL` — Ollama model name, default llama3.2 (optional)
 
