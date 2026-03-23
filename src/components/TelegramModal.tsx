@@ -230,6 +230,6 @@ export const TelegramModal: React.FC<TelegramModalProps> = ({ isOpen, onClose, m
   );
 };
 
-function cn(...inputs: (string | boolean | undefined | null)[]) {
+function cn(...inputs: any[]) {
   return inputs.filter(Boolean).join(' ');
 }

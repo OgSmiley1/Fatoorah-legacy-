@@ -3,69 +3,63 @@ import { Merchant } from '../types';
 
 export function exportMerchantsToExcel(merchants: Merchant[]) {
   const data = merchants.map((m) => ({
-    'Business Name': m.businessName || 'N/A',
+    'Business Name': m.businessName,
     'Category': m.category || 'N/A',
     'Sub-Category': m.subCategory || 'N/A',
-    'Platform': m.platform || 'N/A',
-    'Website URL': m.website || m.url || 'N/A',
+    'Website URL': m.website || 'N/A',
     'Instagram Handle': m.instagramHandle || 'N/A',
     'Email': m.email || 'N/A',
     'Phone': m.phone || 'N/A',
     'WhatsApp': m.whatsapp || 'N/A',
+    'Followers': m.followers,
+    'Quality Score': m.qualityScore || 0,
+    'Reliability Score': m.reliabilityScore || 0,
+    'Compliance Score': m.complianceScore || 0,
     'Fit Score': m.fitScore || 0,
     'Contact Score': m.contactScore || 0,
     'Confidence Score': m.confidenceScore || 0,
-    'Contact Quality': m.contactConfidence?.overall || 'UNKNOWN',
-    'Phone Confidence': m.contactConfidence?.phone || 'N/A',
-    'WhatsApp Confidence': m.contactConfidence?.whatsapp || 'N/A',
-    'Email Confidence': m.contactConfidence?.email || 'N/A',
-    'Instagram Confidence': m.contactConfidence?.instagram || 'N/A',
-    'Revenue Tier': m.revenueEstimate?.tier || 'N/A',
-    'Est. Monthly Revenue (AED)': m.revenueEstimate?.monthlyRevenue || 0,
-    'Setup Fee Min ($)': m.revenueEstimate?.setupFeeMin || 0,
-    'Setup Fee Max ($)': m.revenueEstimate?.setupFeeMax || 0,
-    'Transaction Rate': m.revenueEstimate?.transactionRate || 'N/A',
-    'Detected Gateways': (m.detectedGateways || []).join(', ') || 'None',
-    'Has Payment Gateway': m.hasPaymentGateway ? 'Yes' : 'No',
-    'Discovery Sources': m.discoverySource || 'scraper',
-    'Fit Signals': (m.fitSignals || []).join('; '),
     'Risk Category': m.risk?.category || 'N/A',
-    'Status': m.status || 'N/A',
+    'Risk Factors': (m.risk?.factors || []).join(', '),
+    'Payment Gateway': m.paymentGateway || 'None detected',
+    'Est. Monthly Revenue (AED)': m.revenue?.monthly || 0,
+    'Setup Fee (AED)': m.pricing?.setupFee || 0,
+    'Transaction Rate (%)': m.pricing?.transactionRate || 'N/A',
+    'Settlement Cycle': m.pricing?.settlementCycle || 'N/A',
+    'Contact Validation Status': m.contactValidation?.status || 'N/A',
+    'DUL Number': m.dulNumber || 'N/A',
     'First Found Date': m.foundDate ? new Date(m.foundDate).toLocaleDateString('en-GB') : 'N/A',
-    'Source URL': m.url || 'N/A'
+    'Direct Profile Link': m.url
   }));
 
   const ws = XLSX.utils.json_to_sheet(data);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'MerchantLeads');
-
-  const newLeads = merchants.filter(m => m.status !== 'DUPLICATE');
-  const duplicates = merchants.filter(m => m.status === 'DUPLICATE');
-
-  const platformBreakdown: Record<string, number> = {};
-  const sourceBreakdown: Record<string, number> = {};
-  for (const m of newLeads) {
-    platformBreakdown[m.platform || 'unknown'] = (platformBreakdown[m.platform || 'unknown'] || 0) + 1;
-    sourceBreakdown[m.discoverySource || 'scraper'] = (sourceBreakdown[m.discoverySource || 'scraper'] || 0) + 1;
-  }
-
-  const summaryData = [
-    { Metric: 'Total New Leads', Value: newLeads.length },
-    { Metric: 'Total Duplicates', Value: duplicates.length },
-    { Metric: 'Export Date', Value: new Date().toLocaleDateString('en-GB') },
-    { Metric: '', Value: '' },
-    { Metric: '--- Platform Breakdown ---', Value: '' },
-    ...Object.entries(platformBreakdown).map(([k, v]) => ({ Metric: k, Value: v })),
-    { Metric: '', Value: '' },
-    { Metric: '--- AI Source Breakdown ---', Value: '' },
-    ...Object.entries(sourceBreakdown).map(([k, v]) => ({ Metric: k, Value: v })),
-  ];
-
-  const summaryWs = XLSX.utils.json_to_sheet(summaryData);
-  XLSX.utils.book_append_sheet(wb, summaryWs, 'Summary');
+  XLSX.utils.book_append_sheet(wb, ws, 'MyFatoorahLeads');
 
   const colWidths = Object.keys(data[0] || {}).map(key => ({ wch: Math.max(key.length, 15) }));
   ws['!cols'] = colWidths;
 
   XLSX.writeFile(wb, `MyFatoorah_Leads_${new Date().toISOString().split('T')[0]}.xlsx`);
+}
+
+export function exportVendorShortlist(merchants: Merchant[]) {
+  const data = merchants.filter(m => (m.qualityScore || 0) > 70).map((m) => ({
+    'VENDOR NAME': m.businessName.toUpperCase(),
+    'EVALUATION SCORE': `${m.qualityScore}%`,
+    'RELIABILITY': `${m.reliabilityScore}%`,
+    'COMPLIANCE': `${m.complianceScore}%`,
+    'RISK LEVEL': m.risk?.category || 'LOW',
+    'EST. REVENUE': `AED ${m.revenue?.monthly?.toLocaleString()}`,
+    'CONTACT': m.phone || m.email || 'N/A',
+    'PLATFORM': m.platform.toUpperCase(),
+    'DUL NUMBER': m.dulNumber || 'NOT VERIFIED'
+  }));
+
+  const ws = XLSX.utils.json_to_sheet(data);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'VendorShortlist');
+
+  const colWidths = Object.keys(data[0] || {}).map(key => ({ wch: Math.max(key.length, 20) }));
+  ws['!cols'] = colWidths;
+
+  XLSX.writeFile(wb, `Vendor_Shortlist_Report_${new Date().toISOString().split('T')[0]}.xlsx`);
 }

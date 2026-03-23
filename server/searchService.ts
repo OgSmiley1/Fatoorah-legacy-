@@ -1,9 +1,214 @@
+import { search } from 'duck-duck-scrape';
 import { v4 as uuidv4 } from 'uuid';
+import axios from 'axios';
+import * as cheerio from 'cheerio';
 import db from '../db';
-import { checkDuplicate, normalizeName, normalizePhone } from './dedupService';
-import { computeFitScore, computeContactScore, computeConfidence, computeContactConfidence, estimateRevenue } from './scoringService';
-import { runAllSources, detectPaymentGateways, generateScripts, type MerchantCandidate } from './aiSearchService';
+import { checkDuplicate, normalizeName } from './dedupService';
+import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
 import { logger } from './logger';
+import { scrapeInvestInDubai } from './investInDubaiService';
+
+const EMIRATES = ['Ajman', 'Dubai', 'Sharjah', 'Abu Dhabi', 'Al Ain', 'Ras Al Khaimah', 'RAK', 'Fujairah', 'Umm Al Quwain', 'UAQ'];
+const COD_KEYWORDS = ['cash on delivery', 'COD', 'الدفع كاش', 'الدفع عند الاستلام', 'دفع عند الاستلام', 'pay on delivery'];
+
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0',
+  'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+];
+
+const ANTI_BAN_DELAY = () => Math.random() * 2800 + 1100; // 1.1s to 3.9s delay
+
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+async function googleSearch(category = '', location = 'All'): Promise<any[]> {
+  const locations = (location === 'All') ? EMIRATES : [location];
+  let allResults: any[] = [];
+
+  for (const emirate of locations) {
+    try {
+      const query = `${category || 'instagram shop online store'} ${emirate} (instagram OR website OR متجر) (${COD_KEYWORDS.join(' OR ')})`;
+      const ua = getRandomUserAgent();
+
+      await new Promise(r => setTimeout(r, ANTI_BAN_DELAY()));
+
+      const { data } = await axios.get(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=20&hl=ar`, {
+        headers: {
+          'User-Agent': ua,
+          'Accept-Language': 'ar,en-US,en',
+          'Referer': 'https://www.google.com'
+        },
+        timeout: 10000
+      });
+
+      const $ = cheerio.load(data);
+      const results = $('.g').map((_, el) => ({
+        title: $(el).find('h3').first().text().trim(),
+        url: $(el).find('a').first().attr('href') || '',
+        description: $(el).find('.VwiC3b').text().trim()
+      })).get();
+
+      const filtered = results.filter(r => 
+        r.url.includes('http') && 
+        (r.url.includes('.ae') || COD_KEYWORDS.some(kw => r.description.toLowerCase().includes(kw.toLowerCase())) || r.description.includes('instagram'))
+      );
+
+      allResults = [...allResults, ...filtered];
+    } catch (error: any) {
+      logger.error('google_search_failed', { emirate, error: error.message });
+    }
+  }
+
+  return allResults.slice(0, 150);
+}
+
+async function extractContactsFromWebsite(url: string) {
+  try {
+    const ua = getRandomUserAgent();
+    const { data } = await axios.get(url, { headers: { 'User-Agent': ua }, timeout: 8000 });
+
+    const $ = cheerio.load(data);
+    const html = data.toLowerCase();
+
+    const phones = [...new Set(data.match(/\+?971(?:50|51|52|55|56|58|2|3|4|6|7|9)\d{7,8}|05[0-9]{8}/g) || [])];
+    const emails = [...new Set($('a[href^="mailto:"]').map((_, el) => $(el).attr('href')?.replace('mailto:', '')).get())];
+    const whatsapp = [...new Set($('a[href*="wa.me"], a[href*="whatsapp"]').map((_, el) => $(el).attr('href')).get())];
+
+    const instagram = $('a[href*="instagram.com"]').first().attr('href') || '';
+    const facebook = $('a[href*="facebook.com"]').first().attr('href') || '';
+    const tiktok = $('a[href*="tiktok.com"]').first().attr('href') || '';
+
+    const codMentioned = COD_KEYWORDS.some(kw => html.includes(kw.toLowerCase()));
+
+    // Payment Gateway Detection
+    const gateways = [];
+    if (html.includes('stripe')) gateways.push('Stripe');
+    if (html.includes('checkout.com')) gateways.push('Checkout.com');
+    if (html.includes('telr')) gateways.push('Telr');
+    if (html.includes('payfort') || html.includes('amazon payment')) gateways.push('Amazon Payment Services');
+    if (html.includes('network international')) gateways.push('Network International');
+    if (html.includes('hyperpay')) gateways.push('HyperPay');
+    if (html.includes('tap.company')) gateways.push('Tap Payments');
+    if (html.includes('myfatoorah')) gateways.push('MyFatoorah');
+
+    return {
+      phone: phones[0] || null,
+      email: emails[0] || null,
+      whatsapp: whatsapp[0] || null,
+      instagram: instagram.match(/instagram\.com\/([^\/\?]+)/)?.[1] || null,
+      facebook: facebook.match(/facebook\.com\/([^\/\?]+)/)?.[1] || null,
+      tiktok: tiktok.match(/tiktok\.com\/@?([^\/\?]+)/)?.[1] || null,
+      codMentioned,
+      gateways: gateways.join(', ') || 'None detected',
+      confidence: codMentioned ? 'HIGH COD 🔥' : (phones.length > 0 ? 'Medium' : 'Low')
+    };
+  } catch (e) {
+    return { phone: null, email: null, whatsapp: null, instagram: null, facebook: null, tiktok: null, codMentioned: false, gateways: 'None detected', confidence: 'Low' };
+  }
+}
+
+function estimateRevenue(followers: number, platform: string) {
+  let base = 5000; // Base monthly AED
+  if (platform === 'instagram') base = followers * 0.5;
+  if (platform === 'website') base = 25000;
+  if (platform === 'tiktok') base = followers * 0.3;
+  
+  const monthly = Math.max(base, 2000);
+  return {
+    monthly: Math.round(monthly),
+    annual: Math.round(monthly * 12)
+  };
+}
+
+function calculateSetupFee(revenue: number) {
+  if (revenue > 100000) return 0; // Enterprise
+  if (revenue > 50000) return 499;
+  return 999;
+}
+
+function generateOutreachScripts(m: any) {
+  const name = m.businessName || 'Valued Merchant';
+  const platform = m.platform || 'your platform';
+  
+  return {
+    arabic: `مرحباً ${name}، لاحظنا متجركم الرائع على ${platform}. نحن في ماي فاتورة نوفر حلول دفع متكاملة تدعم الدفع عند الاستلام وبوابات الدفع العالمية. هل تودون تجربة نظامنا؟`,
+    english: `Hi ${name}, we saw your amazing store on ${platform}. At MyFatoorah, we provide seamless payment solutions including COD support and global gateways. Would you like to see how we can help you grow?`,
+    whatsapp: `Hi ${name}, I'm reaching out from MyFatoorah regarding your ${platform} store. We have a special offer for UAE merchants. Interested?`,
+    instagram: `Love your products! We help businesses like yours in the UAE handle payments easily. DM if interested! 🚀`
+  };
+}
+
+import { 
+  computeQualityScore, 
+  computeReliabilityScore, 
+  computeComplianceScore, 
+  computeRiskAssessment 
+} from './scoringService';
+
+async function enrichMerchantContacts(m: any) {
+  logger.info('enriching_merchant_contacts', { name: m.businessName });
+  
+  // 1. Try fetching their website if available
+  if (m.url && m.platform === 'website') {
+    const webContacts = await extractContactsFromWebsite(m.url);
+    
+    m.phone = m.phone || webContacts.phone;
+    m.email = m.email || webContacts.email;
+    m.whatsapp = m.whatsapp || webContacts.whatsapp;
+    m.instagramHandle = m.instagramHandle || webContacts.instagram;
+    m.facebookUrl = m.facebookUrl || webContacts.facebook;
+    m.tiktokHandle = m.tiktokHandle || webContacts.tiktok;
+    m.isCOD = webContacts.codMentioned;
+    m.paymentGateway = webContacts.gateways;
+  }
+
+  // 2. Follow-up search for contact details
+  const enrichmentQuery = `"${m.businessName}" ${m.category || ''} contact phone email whatsapp`;
+  const enrichmentResults = await safeSearch(enrichmentQuery);
+  
+  for (const res of enrichmentResults) {
+    const snippet = res.description || '';
+    
+    if (!m.phone) {
+      const phoneMatch = snippet.match(/(?:\+971|00971|0)?(?:50|52|54|55|56|58|2|3|4|6|7|9)\d{7}/);
+      if (phoneMatch) m.phone = phoneMatch[0];
+    }
+    
+    if (!m.email) {
+      const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+      if (emailMatch) m.email = emailMatch[0];
+    }
+    
+    if (!m.whatsapp) {
+      const waMatch = snippet.match(/wa\.me\/(\d+)/);
+      if (waMatch) m.whatsapp = waMatch[1];
+    }
+
+    if (!m.isCOD) {
+      m.isCOD = COD_KEYWORDS.some(kw => snippet.toLowerCase().includes(kw.toLowerCase()));
+    }
+  }
+
+  // 3. Revenue & Pricing
+  const rev = estimateRevenue(m.followers || 0, m.platform);
+  m.estimatedRevenue = rev.monthly;
+  m.setupFee = calculateSetupFee(rev.monthly);
+  
+  // 4. Scripts
+  m.scripts = generateOutreachScripts(m);
+  
+  // 5. Advanced Scoring
+  m.qualityScore = computeQualityScore(m);
+  m.reliabilityScore = computeReliabilityScore(m);
+  m.complianceScore = computeComplianceScore(m);
+  m.riskAssessment = computeRiskAssessment(m);
+
+  return m;
+}
 
 interface SearchParams {
   keywords: string;
@@ -11,182 +216,226 @@ interface SearchParams {
   maxResults?: number;
 }
 
-interface HuntMerchant extends MerchantCandidate {
-  id: string;
-  status: string;
-  fitScore: number;
-  fitSignals: string[];
-  contactScore: number;
-  confidenceScore: number;
-  contactConfidence: ReturnType<typeof computeContactConfidence>;
-  revenueEstimate: ReturnType<typeof estimateRevenue>;
-  detectedGateways: string[];
-  hasPaymentGateway: boolean;
-  scripts: { arabic: string; english: string; whatsapp: string; instagram: string };
-  duplicateReason?: string;
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function safeSearch(query: string, retries = 3): Promise<any[]> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      // Add a significant delay before each attempt to cool down
+      // First attempt: 2-4s, subsequent attempts: 10s, 20s, 30s...
+      const initialDelay = i === 0 ? 1000 : 8000 * i;
+      await sleep(initialDelay + Math.random() * 3000);
+      
+      const results = await search(query, { safeSearch: 0 });
+      return results.results || [];
+    } catch (error: any) {
+      if (i === retries) {
+        logger.error('search_strategy_failed', { query, error: error.message });
+        return [];
+      }
+      // Aggressive backoff: 15s, 30s, 45s...
+      const delay = 15000 * (i + 1) + Math.random() * 10000; 
+      logger.warn('search_retry', { query, attempt: i + 1, delay });
+      await sleep(delay);
+    }
+  }
+  return [];
 }
 
-export async function huntMerchants(params: SearchParams) {
-  const { keywords, location, maxResults = 10 } = params;
+export async function huntMerchants(params: SearchParams, onProgress?: (count: number) => void) {
+  const { keywords, location, maxResults = 50 } = params;
   const runId = uuidv4();
-
-  logger.info('hunt_started', { runId, keywords, location });
+  
+  logger.info('hunt_started', { runId, keywords, location, maxResults });
 
   try {
-    const { candidates: allCandidates, sourceCounts } = await runAllSources(params);
+    const discoveredMerchants = [];
+    const seenUrls = new Set();
+    
+    // We'll try up to 5 different query variations to get more results if needed
+    const queryVariations = [
+      { type: 'DDG', query: `${keywords} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com)` },
+      { type: 'GOOGLE_MULTI', query: keywords },
+      { type: 'DDG', query: `${keywords} ${location} business directory` },
+      { type: 'GOOGLE', query: `${keywords} ${location} retailers` },
+      { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
+    ];
 
-    logger.info('sources_completed', { runId, sourceCounts, totalRaw: allCandidates.length });
+    for (const variation of queryVariations) {
+      if (discoveredMerchants.length >= maxResults) break;
 
-    const finalMerchants: HuntMerchant[] = [];
-    let newLeadsCount = 0;
+      logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
+      
+      let results: any[] = [];
+      if (variation.type === 'INVEST_IN_DUBAI') {
+        // Only run if location is relevant
+        if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
+          const dubaiResults = await scrapeInvestInDubai(keywords, maxResults - discoveredMerchants.length);
+          // Map to our standard format
+          results = dubaiResults.map(r => ({
+            title: r.businessName,
+            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
+            url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(r.businessName)}`,
+            isInvestInDubai: true,
+            businessName: r.businessName,
+            category: r.category,
+            dulNumber: r.dulNumber
+          }));
+        }
+      } else if (variation.type === 'GOOGLE_MULTI') {
+        results = await googleSearch(variation.query, location);
+      } else if (variation.type === 'GOOGLE') {
+        // Simple single google search
+        try {
+          const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
+          const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
+          const $ = cheerio.load(data);
+          results = $('.g').map((_, el) => ({
+            title: $(el).find('h3').first().text().trim(),
+            url: $(el).find('a').first().attr('href') || '',
+            description: $(el).find('.VwiC3b').text().trim()
+          })).get().filter(r => r.url.startsWith('http'));
+        } catch (e) {
+          logger.error('google_single_search_failed', { query: variation.query });
+        }
+      } else {
+        results = await safeSearch(variation.query);
+      }
+      
+      for (const result of results) {
+        if (seenUrls.has(result.url)) continue;
+        seenUrls.add(result.url);
 
-    const seenUrls = new Set<string>();
-    const uniqueCandidates: typeof allCandidates = [];
-    for (const m of allCandidates.slice(0, maxResults * 3)) {
-      if (seenUrls.has(m.url)) continue;
-      seenUrls.add(m.url);
-      uniqueCandidates.push(m);
-    }
+        const title = result.title || '';
+        const snippet = result.description || '';
+        const businessName = result.businessName || title.split(/[\|\-\(]/)[0].trim();
+        
+        if (!businessName || businessName.length < 2) continue;
 
-    const gatewayPromises = uniqueCandidates.map(m =>
-      (m.platform === 'website' || (m.url && !m.url.includes('instagram.com') && !m.url.includes('facebook.com')))
-        ? detectPaymentGateways(m.url).catch(() => [] as string[])
-        : Promise.resolve([] as string[])
-    );
-    const allGateways = await Promise.all(gatewayPromises);
+        let platform = 'website';
+        if (result.isInvestInDubai) platform = 'invest_in_dubai';
+        else if (result.url.includes('instagram.com')) platform = 'instagram';
+        else if (result.url.includes('facebook.com')) platform = 'facebook';
+        else if (result.url.includes('tiktok.com')) platform = 'tiktok';
+        else if (result.url.includes('t.me')) platform = 'telegram';
+        else if (result.url.includes('github.com')) platform = 'github';
 
-    for (let idx = 0; idx < uniqueCandidates.length; idx++) {
-      const m = uniqueCandidates[idx];
-      const detectedGateways = allGateways[idx];
+        let instagramHandle = null;
+        if (platform === 'instagram') {
+          const match = result.url.match(/instagram\.com\/([^\/\?]+)/);
+          if (match) instagramHandle = match[1];
+        }
 
-      const dupCheck = checkDuplicate(m);
+        const phoneMatch = snippet.match(/(\+?\d{7,15})/);
+        const phone = phoneMatch ? phoneMatch[1] : null;
 
-      const merchantWithGateways = { ...m, detectedGateways };
-      const fitResult = computeFitScore(merchantWithGateways);
-      const contactScore = computeContactScore(m);
-      const confidenceScore = computeConfidence(m);
-      const contactConfidence = computeContactConfidence(m);
-      const revenueEstimate = estimateRevenue(m, fitResult);
+        const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+        const email = emailMatch ? emailMatch[1] : null;
 
-      const scriptInput = {
-        businessName: m.businessName,
-        platform: m.platform,
-        category: m.category,
-        codSignal: fitResult.codSignal,
-        whatsappOrdering: fitResult.whatsappOrdering,
-        tier: revenueEstimate.tier,
-        hasPaymentGateway: detectedGateways.length > 0
-      };
-
-      let scripts;
-      try {
-        scripts = await generateScripts(scriptInput);
-      } catch {
-        scripts = {
-          arabic: `مرحباً ${m.businessName}، لاحظنا متجركم المميز ونود عرض حلول MyFatoorah لتسهيل الدفع لعملائكم.`,
-          english: `Hi ${m.businessName}, we love your products! MyFatoorah can help you accept online payments easily.`,
-          whatsapp: `Hello! I'm from MyFatoorah. We help businesses like ${m.businessName} accept payments online.`,
-          instagram: `Love your feed! Have you considered adding a direct payment link to your bio?`
+        const merchantData = {
+          businessName,
+          platform,
+          url: result.url,
+          instagramHandle,
+          phone,
+          whatsapp: phone,
+          email,
+          category: result.category || keywords.split(' ')[0],
+          evidence: [snippet],
+          dulNumber: result.dulNumber || null,
+          facebookUrl: null,
+          tiktokHandle: null,
+          physicalAddress: null,
+          isCOD: false,
         };
+
+        // Enrich contacts in background (or sequentially if we want accuracy now)
+        const enriched = await enrichMerchantContacts(merchantData);
+        discoveredMerchants.push(enriched);
+
+        if (onProgress) onProgress(discoveredMerchants.length);
+        if (discoveredMerchants.length >= maxResults) break;
       }
 
+      // Small delay between variations
+      if (discoveredMerchants.length < maxResults) {
+        await sleep(3000 + Math.random() * 2000);
+      }
+    }
+
+    const finalMerchants = [];
+    let newLeadsCount = 0;
+
+    // Deduplicate and save
+    for (const m of discoveredMerchants) {
+      if (seenUrls.has(m.url)) continue;
+      seenUrls.add(m.url);
+
+      const dupCheck = checkDuplicate(m);
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
+        const fitScore = computeFitScore(m.platform, 0);
+        const contactScore = computeContactScore(m);
+        const confidenceScore = computeConfidence(m);
+        const contactValidation = {
+          status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
+          sources: ['Scraper', m.platform]
+        };
 
         db.prepare(`
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url,
-            phone, whatsapp, email, instagram_handle, category,
-            confidence_score, contactability_score, myfatoorah_fit_score, evidence_json, metadata_json,
-            discovery_source, has_payment_gateway, detected_gateways
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            phone, whatsapp, email, instagram_handle, github_url, 
+            facebook_url, tiktok_handle, physical_address,
+            category, dul_number, confidence_score, contactability_score, 
+            myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
+            risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
+            scripts_json, evidence_json, contact_validation_json, metadata_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, m.businessName, normalizeName(m.businessName), m.platform, m.url,
-          m.phone, m.whatsapp, m.email, m.instagramHandle, m.category || keywords.split(/[,\s]+/)[0],
-          confidenceScore, contactScore, fitResult.score,
-          JSON.stringify(m.evidence),
-          JSON.stringify({
-            contactConfidence,
-            fitSignals: fitResult.rationale,
-            revenueEstimate,
-            scripts
-          }),
-          m.discoverySource,
-          detectedGateways.length > 0 ? 1 : 0,
-          detectedGateways.length > 0 ? JSON.stringify(detectedGateways) : null
+          m.phone, m.whatsapp || m.phone, m.email, m.instagramHandle, m.githubUrl,
+          m.facebookUrl, m.tiktokHandle, m.physicalAddress,
+          m.category || keywords.split(' ')[0],
+          m.dulNumber || null, confidenceScore, contactScore, fitScore,
+          m.qualityScore || 0, m.reliabilityScore || 0, m.complianceScore || 0,
+          JSON.stringify(m.riskAssessment || {}), m.estimatedRevenue || 0, m.setupFee || 0,
+          m.paymentGateway || 'None detected', JSON.stringify(m.scripts || {}),
+          JSON.stringify(m.evidence), JSON.stringify(contactValidation), 
+          JSON.stringify({ isCOD: m.isCOD })
         );
 
         const leadId = uuidv4();
+
         db.prepare(`
           INSERT INTO leads (id, merchant_id, run_id, status)
           VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId);
+        `).run(leadId, merchantId, runId, 'NEW');
 
         newLeadsCount++;
-        finalMerchants.push({
-          ...m,
-          id: merchantId,
+        finalMerchants.push({ 
+          ...m, 
+          id: merchantId, 
           status: 'NEW',
-          fitScore: fitResult.score,
-          fitSignals: fitResult.rationale,
-          contactScore,
-          confidenceScore,
-          contactConfidence,
-          revenueEstimate,
-          detectedGateways,
-          hasPaymentGateway: detectedGateways.length > 0,
-          scripts
-        });
-      } else {
-        logger.info('duplicate_skipped', { name: m.businessName, reason: dupCheck.reason });
-        const existingId = dupCheck.existingMerchantId || uuidv4();
-
-        const existingLead = db.prepare(
-          `SELECT id FROM leads WHERE merchant_id = ? AND run_id = ?`
-        ).get(existingId, runId) as { id: string } | undefined;
-
-        if (!existingLead) {
-          const dupLeadId = uuidv4();
-          db.prepare(`
-            INSERT INTO leads (id, merchant_id, run_id, status, notes)
-            VALUES (?, ?, ?, 'DUPLICATE', ?)
-          `).run(dupLeadId, existingId, runId, `Duplicate: ${dupCheck.reason}`);
-        }
-
-        finalMerchants.push({
-          ...m,
-          id: existingId,
-          status: 'DUPLICATE',
-          duplicateReason: dupCheck.reason,
-          fitScore: fitResult.score,
-          fitSignals: fitResult.rationale,
-          contactScore,
-          confidenceScore,
-          contactConfidence,
-          revenueEstimate,
-          detectedGateways,
-          hasPaymentGateway: detectedGateways.length > 0,
-          scripts
+          contactValidation
         });
       }
     }
 
-    const sourceStr = Object.keys(sourceCounts).join('+') || 'scraper';
     db.prepare(`
       INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, sourceStr, finalMerchants.length, newLeadsCount, 'COMPLETED');
+    `).run(runId, `${keywords} ${location}`, 'scraper', finalMerchants.length, newLeadsCount, 'COMPLETED');
 
-    logger.info('hunt_completed', { runId, newLeadsCount, totalProcessed: allCandidates.length, sources: sourceCounts });
-    return { runId, merchants: finalMerchants, newLeadsCount, sourceCounts };
+    logger.info('hunt_completed', { runId, newLeadsCount });
+    return { runId, merchants: finalMerchants, newLeadsCount };
 
-  } catch (error: unknown) {
-    const errMsg = error instanceof Error ? error.message : String(error);
-    logger.error('hunt_failed', { runId, error: errMsg });
+  } catch (error: any) {
+    logger.error('hunt_failed', { runId, error: error.message });
     db.prepare(`
       INSERT INTO search_runs (id, query, source, status, error_message)
       VALUES (?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, 'multi', 'FAILED', errMsg);
+    `).run(runId, `${keywords} ${location}`, 'scraper', 'FAILED', error.message);
     throw error;
   }
 }

@@ -5,14 +5,25 @@ export const telegramService = {
     const message = this.formatMerchantMessage(merchant);
     
     try {
-      const response = await fetch('/api/telegram/send', {
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, chatId, message })
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'Markdown',
+        }),
       });
 
-      const data = await response.json() as { ok: boolean };
-      return data.ok;
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Telegram API Error:', errorData);
+        return false;
+      }
+
+      return true;
     } catch (error) {
       console.error('Failed to send Telegram message:', error);
       return false;
@@ -28,6 +39,7 @@ export const telegramService = {
       if (ok) success++;
       else failed++;
       
+      // Small delay to avoid rate limits
       await new Promise(resolve => setTimeout(resolve, 500));
     }
 
@@ -35,42 +47,40 @@ export const telegramService = {
   },
 
   formatMerchantMessage(m: Merchant): string {
-    const name = m.businessName || 'Unknown';
-    const category = m.category || 'N/A';
-    const ig = m.instagramHandle || 'N/A';
-    const location = m.location || m.platform || 'N/A';
-    const contactQuality = m.contactConfidence?.overall || 'N/A';
-    const url = m.url || '';
-    const script = m.scripts?.english || `Hi ${name}, we'd love to help you accept payments online with MyFatoorah!`;
-
     return `
-${name}
-Category: ${category}
-IG: @${ig}
-Location: ${location}
+🏢 *${m.businessName}*
+📂 Category: ${m.category}
+📱 IG: @${m.instagramHandle || 'N/A'}
+👥 Followers: ${m.followers.toLocaleString()}
+📍 Location: ${m.location}
 
-QUALIFICATION:
-Fit Score: ${m.fitScore || 0}/100
-Contact Quality: ${m.contactScore || 0}/100 (${contactQuality})
-Confidence: ${m.confidenceScore || 0}/100
+🎯 *QUALIFICATION:*
+• Fit Score: ${m.fitScore || 0}/100
+• Contact Quality: ${m.contactScore || 0}/100
+• Confidence: ${m.confidenceScore || 0}/100
+⚠️ Risk: ${m.risk.category}
 
-OUTREACH SCRIPT:
-${script}
+💬 *OUTREACH SCRIPT (EN):*
+\`\`\`
+${m.scripts.english}
+\`\`\`
 
-${url}
+🔗 [View Profile](${m.url})
     `.trim();
   },
 
   async testConnection(token: string, chatId: string): Promise<boolean> {
     try {
-      const response = await fetch('/api/telegram/test', {
+      const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      if (!response.ok) return false;
+      
+      const chatResponse = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, chatId })
+        body: JSON.stringify({ chat_id: chatId })
       });
-
-      const data = await response.json() as { ok: boolean };
-      return data.ok;
+      
+      return chatResponse.ok;
     } catch {
       return false;
     }

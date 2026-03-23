@@ -2,14 +2,15 @@ import React from 'react';
 import { 
   Search, MapPin, Filter, Loader2, Download, Save, Shield, 
   Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send, Eye, EyeOff, Wifi, WifiOff
+  X, TrendingUp, Send, Sparkles
 } from 'lucide-react';
-import { Merchant, SearchParams, SearchHistory, LeadStatus, AiSourceStatus } from '../types';
-import { apiClient } from '../services/apiClient';
+import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
+import { geminiService } from '../services/geminiService';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
-import { exportMerchantsToExcel } from '../utils/exportExcel';
+import { exportMerchantsToExcel, exportVendorShortlist } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
+import { WizardChat } from './WizardChat';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -24,8 +25,8 @@ import { useSearchHistory } from '../hooks/useSearchHistory';
 
 export const HunterDashboard: React.FC = () => {
   const [params, setParams] = React.useState<SearchParams>({
-    keywords: 'Abayas, Perfumes, Local Fashion',
-    location: 'Dubai, UAE',
+    keywords: 'Local Businesses, Retailers, SMEs',
+    location: 'United Arab Emirates',
     categories: [],
     subCategories: [],
     platforms: {
@@ -35,7 +36,7 @@ export const HunterDashboard: React.FC = () => {
       tiktok: true,
       website: true,
     },
-    maxResults: 10,
+    maxResults: 50,
   });
 
   const [subInput, setSubInput] = React.useState('');
@@ -70,31 +71,24 @@ export const HunterDashboard: React.FC = () => {
   };
 
   const [loading, setLoading] = React.useState(false);
+  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number } | null>(null);
   const [merchants, setMerchants] = React.useState<Merchant[]>([]);
   const [savedLeads, setSavedLeads] = React.useState<Merchant[]>([]);
-  const [stats, setStats] = React.useState({ total: 0, leads: 0, newLeads: 0, duplicates: 0 });
+  const [stats, setStats] = React.useState({ total: 0, leads: 0 });
   const [showFilters, setShowFilters] = React.useState(true);
   const [showTelegram, setShowTelegram] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
-  const [showDuplicates, setShowDuplicates] = React.useState(false);
-  const [aiSources, setAiSources] = React.useState<AiSourceStatus[]>([]);
-  const [sourceCounts, setSourceCounts] = React.useState<Record<string, number>>({});
   const socketRef = React.useRef<Socket | null>(null);
   
   const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
 
   const refreshStats = async () => {
     try {
-      const data = await apiClient.getStats();
-      setStats({ 
-        total: data.totalMerchants, 
-        leads: data.totalLeads,
-        newLeads: data.newLeads,
-        duplicates: data.duplicates
-      });
+      const data = await geminiService.getStats();
+      setStats({ total: data.totalMerchants, leads: data.totalLeads });
       
-      const leads = await apiClient.getLeads();
+      const leads = await geminiService.getLeads();
       setSavedLeads(leads);
       
       refreshHistory();
@@ -103,18 +97,11 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
-  const refreshAiStatus = async () => {
-    try {
-      const sources = await apiClient.getAiStatus();
-      setAiSources(sources);
-    } catch {}
-  };
-
   React.useEffect(() => {
     refreshStats();
-    refreshAiStatus();
   }, []);
 
+  // Socket.io initialization
   React.useEffect(() => {
     const socket = io();
     socketRef.current = socket;
@@ -123,15 +110,21 @@ export const HunterDashboard: React.FC = () => {
       console.log('Connected to server socket');
     });
 
-    socket.on('hunt-completed', (data: { merchants?: Merchant[] }) => {
-      if (data.merchants) {
-        setMerchants(prev => {
-          const seenIds = new Set(prev.map(m => m.id));
-          const newOnes = data.merchants!.filter((m: Merchant) => !seenIds.has(m.id));
-          return [...prev, ...newOnes];
-        });
-        refreshStats();
-      }
+    socket.on('hunt-started', (data: any) => {
+      setLoading(true);
+      setSearchProgress({ query: data.query, count: 0 });
+      setParams(prev => ({ ...prev, keywords: data.query }));
+    });
+
+    socket.on('hunt-progress', (data: any) => {
+      setSearchProgress(data);
+    });
+
+    socket.on('hunt-completed', (data: any) => {
+      setLoading(false);
+      setSearchProgress(null);
+      setMerchants(data.merchants);
+      refreshStats();
     });
 
     return () => {
@@ -139,35 +132,59 @@ export const HunterDashboard: React.FC = () => {
     };
   }, []);
 
+  const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
+
   const handleSearch = async (overrideKeywords?: string) => {
     const searchKeywords = overrideKeywords || params.keywords;
     if (!searchKeywords) return;
     
     setLoading(true);
-    setShowDuplicates(false);
     try {
       const searchParams = overrideKeywords 
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      const result = await apiClient.hunt(searchParams);
-      const results = result.merchants || [];
+      let results: Merchant[] = [];
       
-      if (result.sourceCounts) {
-        setSourceCounts(result.sourceCounts);
+      // Strategy 1: Client-side AI Search (Resilient & Grounded)
+      console.log("Starting AI Search...");
+      const aiResults = await geminiService.aiSearchMerchants(searchParams);
+      
+      if (aiResults.length > 0) {
+        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
+        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        results = ingestResult.merchants;
+      }
+
+      // Strategy 2: Fallback to Server-side Scraper if AI found too few
+      if (results.length < (params.maxResults || 10) / 2) {
+        console.log("Falling back to server-side scraper...");
+        const scraperResults = await geminiService.searchMerchants(searchParams);
+        // Merge results, avoiding duplicates
+        const seenIds = new Set(results.map(r => r.id));
+        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
+        results = [...results, ...newScraperResults];
       }
 
       setMerchants(results);
       
+      // Save to history
       saveSearch({
         sessionId: Math.random().toString(36).substr(2, 9),
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
-        resultsCount: results.filter(r => r.status !== 'DUPLICATE').length
+        resultsCount: results.length
       });
       
       refreshStats();
+      
+      if (socketRef.current) {
+        socketRef.current.emit('hunt-finished', { 
+          merchants: results, 
+          query: searchKeywords 
+        });
+      }
     } catch (e) {
       console.error("Search failed:", e);
       setTgStatus('error');
@@ -177,13 +194,21 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
-  const handleSaveLead = async (merchant: Merchant) => {
+  React.useEffect(() => {
+    handleSearchRef.current = handleSearch;
+  }, [handleSearch]);
+
+  const handleUpdateLead = async (id: string, status: LeadStatus) => {
     try {
-      await apiClient.updateLead(merchant.id, { status: 'NEW' });
+      await geminiService.updateLead(id, { status });
       refreshStats();
     } catch (error) {
-      console.error("Failed to save lead:", error);
+      console.error("Failed to update lead:", error);
     }
+  };
+
+  const handleSaveLead = async (merchant: Merchant) => {
+    handleUpdateLead(merchant.id, 'NEW');
   };
 
   const clearAllHistory = () => {
@@ -194,14 +219,9 @@ export const HunterDashboard: React.FC = () => {
     }
   };
 
-  const newMerchants = merchants.filter(m => m.status !== 'DUPLICATE');
-  const duplicateMerchants = merchants.filter(m => m.status === 'DUPLICATE');
-  const displayMerchants = showDuplicates ? merchants : newMerchants;
-  const newThisSession = newMerchants.length;
-  const activeSources = aiSources.filter(s => s.available).length;
-
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col">
+      {/* Header */}
       <header className="border-b border-slate-800 bg-slate-900/50 backdrop-blur-xl sticky top-0 z-30">
         <div className="max-w-[1600px] mx-auto px-6 h-20 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -215,22 +235,6 @@ export const HunterDashboard: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-slate-800/50 rounded-lg border border-slate-700">
-              {aiSources.map(source => (
-                <div key={source.name} className="group relative">
-                  <div className={cn(
-                    "w-2 h-2 rounded-full",
-                    source.available ? "bg-emerald-400" : "bg-slate-600"
-                  )} />
-                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-slate-800 text-[9px] text-slate-300 rounded border border-slate-700 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-50">
-                    {source.name}: {source.reason}
-                  </div>
-                </div>
-              ))}
-              <span className="text-[9px] font-bold text-slate-500 uppercase ml-1">
-                {activeSources}/{aiSources.length} AI
-              </span>
-            </div>
             <button
               onClick={() => setShowTelegram(true)}
               className={cn(
@@ -247,10 +251,27 @@ export const HunterDashboard: React.FC = () => {
                 <p className="text-lg font-black text-white">{stats.total}</p>
               </div>
               <div className="text-center">
-                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">New Leads</p>
-                <p className="text-lg font-black text-emerald-400">{stats.newLeads}</p>
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Qualified Leads</p>
+                <p className="text-lg font-black text-emerald-400">{stats.leads}</p>
               </div>
             </div>
+            <button
+              onClick={() => {
+                window.open('/api/export-csv', '_blank');
+              }}
+              className="mission-control-button mission-control-button-secondary"
+            >
+              <Download size={18} />
+              <span className="hidden sm:inline">Download CSV</span>
+            </button>
+            <button
+              onClick={() => exportVendorShortlist(merchants.length > 0 ? merchants : savedLeads)}
+              disabled={merchants.length === 0 && savedLeads.length === 0}
+              className="mission-control-button mission-control-button-secondary"
+            >
+              <Shield size={18} />
+              <span className="hidden sm:inline">Vendor Shortlist</span>
+            </button>
             <button
               onClick={() => exportMerchantsToExcel(merchants.length > 0 ? merchants : savedLeads)}
               disabled={merchants.length === 0 && savedLeads.length === 0}
@@ -264,11 +285,13 @@ export const HunterDashboard: React.FC = () => {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
+        {/* Sidebar Filters */}
         <aside className={cn(
           "w-80 border-r border-slate-800 bg-slate-900/30 overflow-y-auto transition-all duration-300 hidden lg:block",
           !showFilters && "-ml-80"
         )}>
           <div className="p-6 space-y-8">
+            {/* Search Section */}
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="mission-control-label">Lead Qualification</h3>
@@ -352,6 +375,7 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
 
+            {/* Platforms */}
             <div className="space-y-4">
               <h3 className="mission-control-label">Discovery Channels</h3>
               <div className="grid grid-cols-2 gap-2">
@@ -379,39 +403,7 @@ export const HunterDashboard: React.FC = () => {
               </div>
             </div>
 
-            {aiSources.length > 0 && (
-              <div className="space-y-4">
-                <h3 className="mission-control-label">AI Search Sources</h3>
-                <div className="space-y-2">
-                  {aiSources.map(source => (
-                    <div key={source.name} className="flex flex-col gap-0.5 p-2 rounded-lg bg-slate-950/50 border border-slate-800">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <div className={cn(
-                            "w-2 h-2 rounded-full flex-shrink-0",
-                            source.available ? "bg-emerald-400" : "bg-slate-600"
-                          )} />
-                          <span className="text-[10px] font-bold text-slate-300 uppercase">{source.name}</span>
-                          <span className={cn(
-                            "text-[8px] font-bold px-1 rounded uppercase",
-                            source.free ? "text-emerald-400 bg-emerald-400/10" : "text-amber-400 bg-amber-400/10"
-                          )}>
-                            {source.free ? 'Free' : 'Paid'}
-                          </span>
-                        </div>
-                        <span className="text-[8px] font-bold text-slate-500 uppercase">
-                          {source.available ? 'Active' : 'Off'}
-                        </span>
-                      </div>
-                      {source.reason && (
-                        <span className="text-[8px] text-slate-600 pl-4">{source.reason}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
+            {/* Search History */}
             {searchHistory.length > 0 && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
@@ -444,8 +436,10 @@ export const HunterDashboard: React.FC = () => {
           </div>
         </aside>
 
+        {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-slate-950 p-6">
           <div className="max-w-[1200px] mx-auto space-y-6">
+            {/* Navigation Tabs */}
             <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 mb-6 w-fit">
               <button 
                 onClick={() => setActiveTab('hunt')}
@@ -469,129 +463,105 @@ export const HunterDashboard: React.FC = () => {
 
             {activeTab === 'hunt' ? (
               <>
-                <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
-                  <div className="flex flex-col md:flex-row gap-3">
-                    <div className="flex-1 relative">
-                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
-                      <input
-                        type="text"
-                        value={params.keywords}
-                        onChange={e => setParams({ ...params, keywords: e.target.value })}
-                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
-                        placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
-                      />
-                    </div>
-                    <div className="w-full md:w-64 relative">
-                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
-                      <input
-                        type="text"
-                        value={params.location}
-                        onChange={e => setParams({ ...params, location: e.target.value })}
-                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
-                        placeholder="Location..."
-                      />
-                    </div>
-                    <button
-                      onClick={() => handleSearch()}
-                      disabled={loading}
-                      className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
-                    >
-                      {loading ? <Loader2 className="animate-spin" size={24} /> : <Zap size={24} className="group-hover:scale-110 transition-transform" />}
-                      <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
-                    </button>
-                  </div>
+                {/* Global Search Bar */}
+            <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
+              <div className="flex flex-col md:flex-row gap-3">
+                <div className="flex-1 relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
+                  <input
+                    type="text"
+                    value={params.keywords}
+                    onChange={e => setParams({ ...params, keywords: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
+                    placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
+                  />
                 </div>
-
-                {merchants.length > 0 && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
-                          {newMerchants.length} new leads
-                        </span>
-                        {Object.keys(sourceCounts).length > 0 && (
-                          <span className="text-[9px] font-bold text-slate-500 uppercase">
-                            via {Object.entries(sourceCounts).map(([k, v]) => `${k}(${v})`).join(' + ')}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {duplicateMerchants.length > 0 && (
-                      <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
-                        <Shield size={14} className="text-slate-500" />
-                        <span className="text-[10px] font-bold text-slate-400">
-                          {duplicateMerchants.length} previously found merchants hidden
-                        </span>
-                        <button
-                          onClick={() => setShowDuplicates(!showDuplicates)}
-                          className="flex items-center gap-1.5 text-[10px] font-bold text-blue-400 hover:text-blue-300 uppercase tracking-widest transition-colors ml-auto"
-                        >
-                          {showDuplicates ? <EyeOff size={12} /> : <Eye size={12} />}
-                          {showDuplicates ? 'Hide' : 'Show'}
-                        </button>
-                      </div>
+                <div className="w-full md:w-64 relative">
+                  <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
+                  <input
+                    type="text"
+                    value={params.location}
+                    onChange={e => setParams({ ...params, location: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
+                    placeholder="Location..."
+                  />
+                </div>
+                <button
+                  onClick={() => handleSearch()}
+                  disabled={loading}
+                  className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
+                >
+                  {loading ? <Loader2 className="animate-spin" size={24} /> : <Zap size={24} className="group-hover:scale-110 transition-transform" />}
+                  <div className="flex flex-col items-start">
+                    <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
+                    {loading && searchProgress && (
+                      <span className="text-[10px] opacity-70">Found: {searchProgress.count}</span>
                     )}
                   </div>
-                )}
+                </button>
+              </div>
+            </div>
 
-                {displayMerchants.length === 0 && !loading ? (
-                  <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
-                    <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
-                      <Search size={40} className="text-slate-700" />
-                    </div>
-                    <div className="space-y-2">
-                      <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
-                      <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
-                        Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
-                      </p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
-                    <AnimatePresence mode="popLayout">
-                      {displayMerchants.map((merchant) => (
-                        <MerchantCard
-                          key={merchant.id}
-                          merchant={merchant}
-                          onSave={handleSaveLead}
-                          isSaved={savedLeads.some(l => l.id === merchant.id)}
-                        />
-                      ))}
-                    </AnimatePresence>
-                  </div>
-                )}
-
-                {loading && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {[1, 2, 3, 4].map(i => (
-                      <div key={i} className="mission-control-card h-[400px] animate-pulse">
-                        <div className="p-6 space-y-6">
-                          <div className="flex justify-between">
-                            <div className="w-1/2 h-6 bg-slate-800 rounded" />
-                            <div className="w-20 h-6 bg-slate-800 rounded-full" />
-                          </div>
-                          <div className="grid grid-cols-3 gap-3">
-                            {[1, 2, 3].map(j => (
-                              <div key={j} className="h-16 bg-slate-800 rounded-xl" />
-                            ))}
-                          </div>
-                          <div className="h-24 bg-slate-800 rounded-xl" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
+            {/* Results Grid */}
+            {merchants.length === 0 && !loading ? (
+              <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
+                <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
+                  <Search size={40} className="text-slate-700" />
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
+                  <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
+                    Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
+                  </p>
+                </div>
+              </div>
             ) : (
-              <PipelineView />
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
+                <AnimatePresence mode="popLayout">
+                  {merchants.map((merchant) => (
+                    <MerchantCard
+                      key={merchant.id}
+                      merchant={merchant}
+                      onSave={handleSaveLead}
+                      isSaved={savedLeads.some(l => l.id === merchant.id)}
+                    />
+                  ))}
+                </AnimatePresence>
+              </div>
             )}
-          </div>
-        </main>
-      </div>
 
+            {/* Loading State */}
+            {loading && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {[1, 2, 3, 4].map(i => (
+                  <div key={i} className="mission-control-card h-[400px] animate-pulse">
+                    <div className="p-6 space-y-6">
+                      <div className="flex justify-between">
+                        <div className="w-1/2 h-6 bg-slate-800 rounded" />
+                        <div className="w-20 h-6 bg-slate-800 rounded-full" />
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        {[1, 2, 3].map(j => (
+                          <div key={j} className="h-16 bg-slate-800 rounded-xl" />
+                        ))}
+                      </div>
+                      <div className="h-24 bg-slate-800 rounded-xl" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <PipelineView />
+        )}
+      </div>
+    </main>
+  </div>
+
+      {/* Footer Status Bar */}
       <footer className="h-10 border-t border-slate-800 bg-slate-900 flex items-center px-6 justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
@@ -602,15 +572,13 @@ export const HunterDashboard: React.FC = () => {
             <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
             Deduplication Active
           </div>
-          <div className="flex items-center gap-1.5">
-            <div className={cn("w-1.5 h-1.5 rounded-full", activeSources > 1 ? "bg-violet-500" : "bg-slate-600")} />
-            {activeSources} AI Sources
+          <div className="flex items-center gap-1.5 border-l border-slate-800 pl-4">
+            <Sparkles size={10} className="text-blue-400" />
+            <span className="text-blue-400 font-bold">Multi-Engine Intelligence (Gemini + Web + InvestInDubai)</span>
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span>{newThisSession} new this session</span>
-          <span>|</span>
-          <span>{stats.total} total in DB</span>
+          <span>{stats.total} Merchants in Database</span>
           <button onClick={clearAllHistory} className="hover:text-rose-500 transition-colors">Clear History</button>
         </div>
       </footer>
@@ -620,6 +588,15 @@ export const HunterDashboard: React.FC = () => {
         onClose={() => setShowTelegram(false)}
         merchants={merchants}
         savedLeads={savedLeads}
+      />
+
+      <WizardChat 
+        onSearch={(keywords, location) => {
+          setParams(prev => ({ ...prev, keywords, location }));
+          handleSearch(keywords);
+        }}
+        onRefreshStats={refreshStats}
+        onUpdateStatus={handleUpdateLead}
       />
     </div>
   );

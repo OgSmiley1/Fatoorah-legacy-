@@ -1,7 +1,9 @@
 import Database from 'better-sqlite3';
+import path from 'path';
 
 const db = new Database('wizard.db');
 
+// Initialize schema
 db.exec(`
   CREATE TABLE IF NOT EXISTS merchants (
     id TEXT PRIMARY KEY,
@@ -18,18 +20,30 @@ db.exec(`
     whatsapp TEXT,
     email TEXT,
     instagram_handle TEXT,
+    github_url TEXT,
     tiktok_handle TEXT,
     telegram_handle TEXT,
+    facebook_url TEXT,
+    twitter_handle TEXT,
+    linkedin_url TEXT,
+    physical_address TEXT,
+    dul_number TEXT,
     first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     last_validated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     confidence_score REAL DEFAULT 0,
     contactability_score REAL DEFAULT 0,
     myfatoorah_fit_score REAL DEFAULT 0,
+    quality_score REAL DEFAULT 0,
+    reliability_score REAL DEFAULT 0,
+    compliance_score REAL DEFAULT 0,
+    risk_assessment_json TEXT,
+    estimated_revenue REAL DEFAULT 0,
+    setup_fee REAL DEFAULT 0,
+    payment_gateway TEXT,
+    scripts_json TEXT,
     evidence_json TEXT,
-    metadata_json TEXT,
-    discovery_source TEXT,
-    has_payment_gateway INTEGER DEFAULT 0,
-    detected_gateways TEXT
+    contact_validation_json TEXT,
+    metadata_json TEXT
   );
 
   CREATE TABLE IF NOT EXISTS leads (
@@ -71,22 +85,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_merchants_normalized_name ON merchants(normalized_name);
   CREATE INDEX IF NOT EXISTS idx_merchants_phone ON merchants(phone);
   CREATE INDEX IF NOT EXISTS idx_merchants_email ON merchants(email);
-  CREATE INDEX IF NOT EXISTS idx_merchants_source_url ON merchants(source_url);
   CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
   CREATE INDEX IF NOT EXISTS idx_leads_merchant_id ON leads(merchant_id);
 `);
-
-function safeAddColumn(table: string, column: string, type: string) {
-  try {
-    const cols = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
-    if (!cols.some(c => c.name === column)) {
-      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-    }
-  } catch {}
-}
-
-safeAddColumn('merchants', 'discovery_source', 'TEXT');
-safeAddColumn('merchants', 'has_payment_gateway', 'INTEGER DEFAULT 0');
-safeAddColumn('merchants', 'detected_gateways', 'TEXT');
 
 export default db;

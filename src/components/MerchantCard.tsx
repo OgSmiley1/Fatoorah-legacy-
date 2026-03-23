@@ -1,13 +1,12 @@
 import React from 'react';
-import { Merchant, ContactConfidenceLevel, LeadStatus } from '../types';
+import { Merchant } from '../types';
 import { 
   Mail, Phone, MessageCircle, Shield, TrendingUp, 
   Copy, CheckCircle2, Loader2, 
-  Globe, Zap, DollarSign,
-  Send, Instagram, Save, Info, CreditCard, Sparkles
+  Globe, Zap, Github, Facebook, MapPin,
+  Send, Instagram, Save
 } from 'lucide-react';
 import { telegramService } from '../services/telegramService';
-import { generateOutreachScripts } from '../utils/scripts';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -21,48 +20,8 @@ interface MerchantCardProps {
   onSave?: (merchant: Merchant) => void;
   isSaved?: boolean;
   showStatus?: boolean;
-  onStatusChange?: (id: string, status: LeadStatus) => void;
+  onStatusChange?: (id: string, status: any) => void;
 }
-
-const confidenceBadgeColor: Record<ContactConfidenceLevel, string> = {
-  VERIFIED: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  LIKELY: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  WEAK: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-  MISSING: 'bg-slate-800/50 text-slate-500 border-slate-700',
-};
-
-function ConfidenceBadge({ level }: { level?: ContactConfidenceLevel }) {
-  const l = level || 'MISSING';
-  return (
-    <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", confidenceBadgeColor[l])}>
-      {l}
-    </span>
-  );
-}
-
-function ContactabilityBadge({ level }: { level?: string }) {
-  const colors: Record<string, string> = {
-    HIGH: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-    MEDIUM: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-    LOW: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
-    NONE: 'bg-red-500/10 text-red-400 border-red-500/20',
-  };
-  const l = level || 'NONE';
-  return (
-    <span className={cn("text-[9px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider", colors[l] || colors.NONE)}>
-      {l} Contact
-    </span>
-  );
-}
-
-const sourceColors: Record<string, string> = {
-  scraper: 'bg-slate-700/50 text-slate-300 border-slate-600',
-  perplexity: 'bg-violet-500/10 text-violet-400 border-violet-500/20',
-  grok: 'bg-orange-500/10 text-orange-400 border-orange-500/20',
-  gemini: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
-  ollama: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
-  manual: 'bg-slate-700/50 text-slate-300 border-slate-600',
-};
 
 export const MerchantCard: React.FC<MerchantCardProps> = ({ 
   merchant, 
@@ -72,14 +31,38 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   onStatusChange
 }) => {
   const [showScripts, setShowScripts] = React.useState(false);
-  const [showFitDetails, setShowFitDetails] = React.useState(false);
   const [copied, setCopied] = React.useState<string | null>(null);
   const [tgSending, setTgSending] = React.useState(false);
+  const [ghUpdates, setGhUpdates] = React.useState<any[]>([]);
+  const [loadingGh, setLoadingGh] = React.useState(false);
 
-  const scripts = React.useMemo(() => {
-    if (merchant.scripts?.arabic && merchant.scripts?.english) return merchant.scripts;
-    return generateOutreachScripts(merchant);
-  }, [merchant]);
+  React.useEffect(() => {
+    if (merchant.githubUrl) {
+      fetchGithubUpdates();
+    }
+  }, [merchant.githubUrl]);
+
+  const fetchGithubUpdates = async () => {
+    if (!merchant.githubUrl) return;
+    setLoadingGh(true);
+    try {
+      // Extract owner/repo from https://github.com/owner/repo
+      const parts = merchant.githubUrl.replace('https://github.com/', '').split('/');
+      if (parts.length >= 2) {
+        const owner = parts[0];
+        const repo = parts[1];
+        const response = await fetch(`https://api.github.com/repos/${owner}/${repo}/commits?per_page=3`);
+        if (response.ok) {
+          const data = await response.json();
+          setGhUpdates(data);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch GitHub updates:', error);
+    } finally {
+      setLoadingGh(false);
+    }
+  };
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -108,23 +91,18 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
     }
   };
 
+  const openWhatsApp = () => {
+    if (!merchant.whatsapp) return;
+    const cleanPhone = merchant.whatsapp.replace(/\D/g, '');
+    const message = encodeURIComponent(`Hello ${merchant.businessName}, I saw your business on ${merchant.platform} and I'm interested in your products. Do you offer Cash on Delivery?`);
+    window.open(`https://wa.me/${cleanPhone}?text=${message}`, '_blank');
+  };
+
   const getScoreColor = (score: number) => {
     if (score >= 80) return "text-emerald-400";
     if (score >= 50) return "text-amber-400";
     return "text-rose-400";
   };
-
-  const cc = merchant.contactConfidence;
-  const rev = merchant.revenueEstimate;
-  const gateways = merchant.detectedGateways || [];
-  const source = merchant.discoverySource || 'scraper';
-
-  const fitWhyBlurb = React.useMemo(() => {
-    const signals = merchant.fitSignals || [];
-    if (signals.length === 0) return null;
-    const top = signals.slice(0, 3).join(', ');
-    return `MyFatoorah fit: ${top}`;
-  }, [merchant.fitSignals]);
 
   return (
     <motion.div
@@ -137,15 +115,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
         (merchant.fitScore || 0) >= 50 ? "border-l-amber-500" : "border-l-slate-800"
       )}
     >
-      {merchant.status === 'DUPLICATE' && (
-        <div className="bg-slate-800/50 px-4 py-1.5 text-center">
-          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Seen Before</span>
-        </div>
-      )}
       <div className="p-6">
+        {/* Header */}
         <div className="flex justify-between items-start mb-6">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <div className="flex items-center gap-2 mb-1">
               <h3 className="text-xl font-bold text-slate-100 truncate">
                 {merchant.businessName}
               </h3>
@@ -159,121 +133,143 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   COD
                 </span>
               )}
-              {source.split('+').map((s, i) => (
-                <span key={i} className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider", sourceColors[s] || sourceColors.scraper)}>
-                  {s}
-                </span>
-              ))}
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">
-                <Instagram size={12} className="text-pink-500" /> {merchant.instagramHandle ? `@${merchant.instagramHandle}` : (merchant.businessName || 'merchant').toLowerCase().replace(/\s/g, '')}
-                <ConfidenceBadge level={cc?.instagram} />
+                <Instagram size={12} className="text-pink-500" /> {merchant.instagramHandle || '@' + (merchant.businessName || 'merchant').toLowerCase().replace(/\s/g, '')}
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <Globe size={12} className="text-blue-400" /> {merchant.location || merchant.platform}
+                <Globe size={12} className="text-blue-400" /> {merchant.location}
               </span>
+              {merchant.dulNumber && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1 text-amber-400">
+                    <Shield size={12} /> DUL: {merchant.dulNumber}
+                  </span>
+                </>
+              )}
+              {merchant.facebookUrl && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Facebook size={12} className="text-blue-600" /> {merchant.facebookUrl}
+                  </span>
+                </>
+              )}
+              {merchant.tiktokHandle && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <Zap size={12} className="text-slate-100" /> @{merchant.tiktokHandle}
+                  </span>
+                </>
+              )}
+              {merchant.physicalAddress && (
+                <>
+                  <span>•</span>
+                  <span className="flex items-center gap-1">
+                    <MapPin size={12} className="text-rose-400" /> {merchant.physicalAddress}
+                  </span>
+                </>
+              )}
             </div>
           </div>
           
-          <div className="flex flex-col items-end gap-1">
-            <ContactabilityBadge level={cc?.overall || merchant.contactabilityLevel} />
-            {merchant.duplicateReason && (
-              <span className="text-[8px] text-slate-500 font-bold uppercase">{merchant.duplicateReason}</span>
-            )}
-          </div>
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex gap-1">
+                {merchant.contactValidation?.status === 'VERIFIED' && (
+                  <div className="bg-blue-500/10 text-blue-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-blue-500/20 uppercase tracking-wider flex items-center gap-1">
+                    <CheckCircle2 size={10} /> Verified
+                  </div>
+                )}
+                <div className={cn(
+                  "px-3 py-1.5 rounded-full text-[10px] font-bold flex items-center gap-1.5 border uppercase tracking-widest",
+                  merchant.risk?.category === 'LOW' ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                  merchant.risk?.category === 'MEDIUM' ? "bg-amber-500/10 text-amber-400 border-amber-500/20" :
+                  "bg-red-500/10 text-red-400 border-red-500/20"
+                )}>
+                  {merchant.risk?.emoji || '🛡️'} {merchant.risk?.category || 'LOW'} RISK
+                </div>
+              </div>
+              {merchant.duplicateReason && (
+                <span className="text-[8px] text-slate-500 font-bold uppercase">{merchant.duplicateReason}</span>
+              )}
+            </div>
         </div>
 
+        {/* Qualification Scores */}
         <div className="grid grid-cols-3 gap-3 mb-4">
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50 text-center">
-            <p className="mission-control-label mb-1">Fit Score</p>
-            <p className={cn("text-xl font-black", getScoreColor(merchant.fitScore || 0))}>
-              {merchant.fitScore || 0}
+            <p className="mission-control-label mb-1">Quality</p>
+            <p className={cn("text-xl font-black", getScoreColor(merchant.qualityScore || 0))}>
+              {merchant.qualityScore || 0}
             </p>
           </div>
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50 text-center">
-            <p className="mission-control-label mb-1">Contact</p>
-            <p className={cn("text-xl font-black", getScoreColor(merchant.contactScore || 0))}>
-              {merchant.contactScore || 0}
+            <p className="mission-control-label mb-1">Reliability</p>
+            <p className={cn("text-xl font-black", getScoreColor(merchant.reliabilityScore || 0))}>
+              {merchant.reliabilityScore || 0}
             </p>
           </div>
           <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50 text-center">
-            <p className="mission-control-label mb-1">Confidence</p>
-            <p className={cn("text-xl font-black", getScoreColor(merchant.confidenceScore || 0))}>
-              {merchant.confidenceScore || 0}
+            <p className="mission-control-label mb-1">Compliance</p>
+            <p className={cn("text-xl font-black", getScoreColor(merchant.complianceScore || 0))}>
+              {merchant.complianceScore || 0}
             </p>
           </div>
         </div>
 
-        {rev && (
-          <div className="mb-4 p-3 bg-emerald-500/5 rounded-xl border border-emerald-500/10">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <DollarSign size={14} className="text-emerald-400" />
-                <span className="text-[10px] font-bold text-emerald-400 uppercase">{rev.tier}</span>
-              </div>
-              <span className="text-[10px] font-bold text-slate-400">
-                AED {(rev.monthlyRevenue / 1000).toFixed(0)}K/mo est.
-              </span>
-            </div>
-            <div className="flex items-center gap-4 mt-2">
-              <span className="text-[9px] text-slate-400">
-                Setup: ${rev.setupFeeMin.toLocaleString()}–${rev.setupFeeMax.toLocaleString()}
-              </span>
-              <span className="text-[9px] text-slate-400">
-                Rate: {rev.transactionRate}
-              </span>
+        {/* Risk Assessment Factors */}
+        {merchant.risk?.factors && merchant.risk.factors.length > 0 && (
+          <div className="mb-4">
+            <div className="flex flex-wrap gap-1.5">
+              {merchant.risk.factors.map((factor, i) => (
+                <span key={i} className="bg-rose-500/10 text-rose-400 text-[8px] font-bold px-2 py-0.5 rounded-full border border-rose-500/20 uppercase tracking-tighter">
+                  ⚠️ {factor}
+                </span>
+              ))}
             </div>
           </div>
         )}
 
-        {gateways.length > 0 && (
-          <div className="mb-4 flex flex-wrap gap-1.5">
-            <CreditCard size={12} className="text-rose-400 mt-0.5" />
-            {gateways.map(gw => (
-              <span key={gw} className="text-[8px] font-bold px-1.5 py-0.5 rounded border bg-rose-500/10 text-rose-400 border-rose-500/20 uppercase">
-                Has {gw}
-              </span>
-            ))}
+        {/* Revenue & Pricing */}
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50">
+            <p className="mission-control-label mb-1 flex items-center gap-1">
+              <TrendingUp size={10} /> Est. Revenue
+            </p>
+            <p className="text-sm font-bold text-slate-100">
+              AED {merchant.revenue?.monthly?.toLocaleString() || '0'}/mo
+            </p>
+            <p className="text-[9px] text-slate-500 uppercase">
+              AED {merchant.revenue?.annual?.toLocaleString() || '0'}/yr
+            </p>
           </div>
-        )}
-
-        {gateways.length === 0 && merchant.status !== 'DUPLICATE' && (
-          <div className="mb-4 flex items-center gap-1.5">
-            <Sparkles size={12} className="text-emerald-400" />
-            <span className="text-[9px] font-bold text-emerald-400 uppercase">No payment gateway detected — prime target</span>
+          <div className="bg-slate-950/50 p-3 rounded-xl border border-slate-800/50">
+            <p className="mission-control-label mb-1 flex items-center gap-1">
+              <Zap size={10} /> MyFatoorah Offer
+            </p>
+            <p className="text-sm font-bold text-emerald-400">
+              {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : `AED ${merchant.pricing?.setupFee} SETUP`}
+            </p>
+            <p className="text-[9px] text-slate-500 uppercase">
+              {merchant.pricing?.transactionRate} • {merchant.pricing?.settlementCycle}
+            </p>
           </div>
-        )}
+        </div>
 
-        {fitWhyBlurb && (
-          <div className="mb-4 p-2.5 bg-blue-500/5 rounded-lg border border-blue-500/10">
-            <div className="flex items-center justify-between">
-              <p className="text-[10px] text-blue-400 font-bold">{fitWhyBlurb}</p>
-              <button onClick={() => setShowFitDetails(!showFitDetails)} className="text-blue-500 hover:text-blue-300">
-                <Info size={12} />
-              </button>
-            </div>
-            <AnimatePresence>
-              {showFitDetails && merchant.fitSignals && (
-                <motion.ul
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="mt-2 space-y-1 overflow-hidden"
-                >
-                  {merchant.fitSignals.map((signal, i) => (
-                    <li key={i} className="text-[9px] text-slate-400 flex items-center gap-1.5">
-                      <div className="w-1 h-1 rounded-full bg-blue-400" />
-                      {signal}
-                    </li>
-                  ))}
-                </motion.ul>
-              )}
-            </AnimatePresence>
+        {/* Payment Gateway */}
+        <div className="mb-6">
+          <h4 className="mission-control-label mb-2">Detected Gateway</h4>
+          <div className="bg-slate-950/50 p-2 rounded-lg border border-slate-800/50 flex items-center gap-2">
+            <Shield size={12} className="text-blue-400" />
+            <span className="text-xs text-slate-300">{merchant.paymentGateway || 'None detected'}</span>
           </div>
-        )}
+        </div>
 
+        {/* Contact Details */}
         <div className="mb-6 space-y-2">
           <div className="flex items-center justify-between">
             <h4 className="mission-control-label">Contact Routes</h4>
@@ -285,31 +281,17 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                 <div className="flex items-center gap-2">
                   <MessageCircle size={12} className="text-emerald-500" />
                   <span>{merchant.whatsapp}</span>
-                  <ConfidenceBadge level={cc?.whatsapp} />
                 </div>
                 <button onClick={() => copyToClipboard(merchant.whatsapp, 'wa')} className="text-emerald-500 hover:text-emerald-400">
                   {copied === 'wa' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
                 </button>
               </div>
             )}
-            {merchant.phone && merchant.phone !== merchant.whatsapp && (
+            {merchant.phone && (
               <div className="flex items-center justify-between text-xs text-slate-300 bg-slate-950/30 p-2 rounded-lg border border-slate-800/50">
                 <div className="flex items-center gap-2">
                   <Phone size={12} className="text-slate-500" />
                   <span>{merchant.phone}</span>
-                  <ConfidenceBadge level={cc?.phone} />
-                </div>
-                <button onClick={() => copyToClipboard(merchant.phone, 'ph')} className="text-slate-500 hover:text-slate-400">
-                  {copied === 'ph' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
-                </button>
-              </div>
-            )}
-            {merchant.phone && merchant.phone === merchant.whatsapp && (
-              <div className="flex items-center justify-between text-xs text-slate-300 bg-slate-950/30 p-2 rounded-lg border border-slate-800/50">
-                <div className="flex items-center gap-2">
-                  <Phone size={12} className="text-slate-500" />
-                  <span>{merchant.phone}</span>
-                  <ConfidenceBadge level={cc?.phone} />
                 </div>
                 <button onClick={() => copyToClipboard(merchant.phone, 'ph')} className="text-slate-500 hover:text-slate-400">
                   {copied === 'ph' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
@@ -321,53 +303,99 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                 <div className="flex items-center gap-2">
                   <Mail size={12} className="text-slate-500" />
                   <span className="truncate max-w-[150px]">{merchant.email}</span>
-                  <ConfidenceBadge level={cc?.email} />
                 </div>
                 <button onClick={() => copyToClipboard(merchant.email, 'em')} className="text-slate-500 hover:text-slate-400">
                   {copied === 'em' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
                 </button>
               </div>
             )}
+            {merchant.facebookUrl && (
+              <div className="flex items-center justify-between text-xs text-slate-300 bg-slate-950/30 p-2 rounded-lg border border-slate-800/50">
+                <div className="flex items-center gap-2">
+                  <Facebook size={12} className="text-blue-600" />
+                  <span className="truncate max-w-[150px]">{merchant.facebookUrl}</span>
+                </div>
+                <button onClick={() => copyToClipboard(merchant.facebookUrl!, 'fb')} className="text-slate-500 hover:text-slate-400">
+                  {copied === 'fb' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            )}
+            {merchant.physicalAddress && (
+              <div className="flex items-center justify-between text-xs text-slate-300 bg-slate-950/30 p-2 rounded-lg border border-slate-800/50">
+                <div className="flex items-center gap-2">
+                  <MapPin size={12} className="text-rose-400" />
+                  <span className="truncate max-w-[150px]">{merchant.physicalAddress}</span>
+                </div>
+                <button onClick={() => copyToClipboard(merchant.physicalAddress!, 'addr')} className="text-slate-500 hover:text-slate-400">
+                  {copied === 'addr' ? <CheckCircle2 size={12} /> : <Copy size={12} />}
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Evidence */}
         {merchant.evidence && merchant.evidence.length > 0 && (
           <div className="mb-6">
             <h4 className="mission-control-label mb-2">Evidence Source</h4>
             <div className="flex flex-wrap gap-2">
               {merchant.evidence.map((source, i) => (
-                typeof source === 'object' && source.uri ? (
-                  <a 
-                    key={i} 
-                    href={source.uri} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="flex items-center gap-1.5 text-[9px] font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded-lg border border-blue-500/20 hover:bg-blue-500/20 transition-all"
-                  >
-                    <Globe size={10} /> {source.title}
-                  </a>
-                ) : (
-                  <span key={i} className="text-[9px] text-slate-400 bg-slate-800/50 px-2 py-1 rounded-lg border border-slate-700">
-                    {typeof source === 'string' ? source.slice(0, 80) + (source.length > 80 ? '...' : '') : ''}
-                  </span>
-                )
+                <a 
+                  key={i} 
+                  href={source.uri} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 text-[9px] font-bold text-blue-400 bg-blue-500/10 px-2 py-1 rounded-lg border border-blue-500/20 hover:bg-blue-500/20 transition-all"
+                >
+                  <Globe size={10} /> {source.title}
+                </a>
               ))}
             </div>
           </div>
         )}
 
+        {/* GitHub Updates */}
+        {merchant.githubUrl && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="mission-control-label flex items-center gap-1.5">
+                <Github size={12} className="text-slate-400" /> GitHub Intelligence
+              </h4>
+              {loadingGh && <Loader2 size={10} className="animate-spin text-slate-500" />}
+            </div>
+            <div className="bg-slate-950/50 rounded-xl border border-slate-800/50 p-3 space-y-2">
+              {ghUpdates.length > 0 ? (
+                ghUpdates.map((commit, i) => (
+                  <div key={i} className="flex flex-col gap-0.5 border-b border-slate-800/30 last:border-0 pb-2 last:pb-0">
+                    <p className="text-[10px] text-slate-300 line-clamp-1 font-mono">
+                      {commit.commit.message}
+                    </p>
+                    <div className="flex items-center justify-between text-[8px] text-slate-500 uppercase tracking-tighter">
+                      <span>{commit.commit.author.name}</span>
+                      <span>{new Date(commit.commit.author.date).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-[10px] text-slate-500 italic">
+                  {loadingGh ? "Fetching latest commits..." : "No recent public activity found."}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Action Buttons */}
         <div className="flex gap-2">
           {showStatus ? (
             <select 
               value={merchant.status}
-              onChange={(e) => onStatusChange?.(merchant.id, e.target.value as LeadStatus)}
+              onChange={(e) => onStatusChange?.(merchant.id, e.target.value)}
               className="flex-1 mission-control-input text-[10px] font-bold uppercase h-10"
             >
               <option value="NEW">New</option>
               <option value="CONTACTED">Contacted</option>
-              <option value="FOLLOW_UP">Follow Up</option>
               <option value="QUALIFIED">Qualified</option>
-              <option value="NOT_QUALIFIED">Not Qualified</option>
               <option value="ONBOARDED">Onboarded</option>
               <option value="REJECTED">Rejected</option>
               <option value="ARCHIVED">Archived</option>
@@ -395,6 +423,18 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           )}
           
           <button
+            onClick={openWhatsApp}
+            disabled={!merchant.whatsapp}
+            className={cn(
+              "mission-control-button w-10 h-10",
+              !merchant.whatsapp ? "opacity-50 cursor-not-allowed" : "mission-control-button-secondary text-emerald-500"
+            )}
+            title="Chat on WhatsApp"
+          >
+            <MessageCircle size={16} />
+          </button>
+          
+          <button
             onClick={handleSendTelegram}
             disabled={tgSending}
             className={cn(
@@ -407,6 +447,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
           </button>
         </div>
 
+        {/* Expandable Sections */}
         <AnimatePresence>
           {showScripts && (
             <motion.div
@@ -419,34 +460,23 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                 <div>
                   <div className="flex justify-between items-center mb-2">
                     <h5 className="mission-control-label">WhatsApp (Arabic)</h5>
-                    <button onClick={() => copyToClipboard(scripts.arabic, 'ar')} className="text-blue-400 hover:text-blue-300">
+                    <button onClick={() => copyToClipboard(merchant.scripts?.arabic || '', 'ar')} className="text-blue-400 hover:text-blue-300">
                       {copied === 'ar' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed text-right font-arabic" dir="rtl">
-                    {scripts.arabic}
+                    {merchant.scripts?.arabic || 'No script available.'}
                   </p>
                 </div>
                 <div className="pt-4 border-t border-slate-800">
                   <div className="flex justify-between items-center mb-2">
                     <h5 className="mission-control-label">WhatsApp (English)</h5>
-                    <button onClick={() => copyToClipboard(scripts.english, 'en')} className="text-blue-400 hover:text-blue-300">
+                    <button onClick={() => copyToClipboard(merchant.scripts?.english || '', 'en')} className="text-blue-400 hover:text-blue-300">
                       {copied === 'en' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                     </button>
                   </div>
                   <p className="text-[11px] text-slate-400 leading-relaxed">
-                    {scripts.english}
-                  </p>
-                </div>
-                <div className="pt-4 border-t border-slate-800">
-                  <div className="flex justify-between items-center mb-2">
-                    <h5 className="mission-control-label">Instagram DM</h5>
-                    <button onClick={() => copyToClipboard(scripts.instagram, 'ig')} className="text-blue-400 hover:text-blue-300">
-                      {copied === 'ig' ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                    </button>
-                  </div>
-                  <p className="text-[11px] text-slate-400 leading-relaxed">
-                    {scripts.instagram}
+                    {merchant.scripts?.english || 'No script available.'}
                   </p>
                 </div>
               </div>
