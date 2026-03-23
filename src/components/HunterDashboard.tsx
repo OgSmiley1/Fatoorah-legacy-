@@ -4,7 +4,7 @@ import {
   Trash2, ChevronRight, Zap,
   X, TrendingUp, Send, Sparkles
 } from 'lucide-react';
-import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
+import { Merchant, SearchParams, SearchHistory, LeadStatus, UAE_EMIRATES, Emirate } from '../types';
 import { geminiService } from '../services/geminiService';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
@@ -27,6 +27,7 @@ export const HunterDashboard: React.FC = () => {
   const [params, setParams] = React.useState<SearchParams>({
     keywords: 'Local Businesses, Retailers, SMEs',
     location: 'United Arab Emirates',
+    emirate: 'All',
     categories: [],
     subCategories: [],
     platforms: {
@@ -481,16 +482,20 @@ export const HunterDashboard: React.FC = () => {
                     placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
                   />
                 </div>
-                <div className="w-full md:w-64 relative">
+                <div className="w-full md:w-48 relative">
                   <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
-                  <input
-                    type="text"
-                    value={params.location}
-                    onChange={e => setParams({ ...params, location: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
-                    placeholder="Location..."
-                  />
+                  <select
+                    value={params.emirate}
+                    onChange={e => {
+                      const emirate = e.target.value as Emirate;
+                      setParams({ ...params, emirate, location: emirate === 'All' ? 'United Arab Emirates' : emirate });
+                    }}
+                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50 appearance-none cursor-pointer"
+                  >
+                    {UAE_EMIRATES.map(em => (
+                      <option key={em} value={em}>{em === 'All' ? 'All Emirates' : em}</option>
+                    ))}
+                  </select>
                 </div>
                 <button
                   onClick={() => handleSearch()}

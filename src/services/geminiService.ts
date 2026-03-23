@@ -35,6 +35,7 @@ export const geminiService = {
         body: JSON.stringify({
           keywords: params.keywords,
           location: params.location,
+          emirate: (params as any).emirate || 'All',
           maxResults: params.maxResults || 30
         })
       });
