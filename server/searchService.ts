@@ -104,50 +104,72 @@ function generateOutreachScripts(m: any) {
   };
 }
 
-import { 
-  computeQualityScore, 
-  computeReliabilityScore, 
-  computeComplianceScore, 
-  computeRiskAssessment 
+import {
+  computeQualityScore,
+  computeReliabilityScore,
+  computeComplianceScore,
+  computeRiskAssessment,
+  computeWeightedScore,
+  computeVerification
 } from './scoringService';
 
 async function enrichMerchantContacts(m: any) {
   logger.info('enriching_merchant_contacts', { name: m.businessName });
-  
+
+  // Track verification sources for multi-source validation
+  m._phoneSources = [];
+  m._emailSources = [];
+  m._enrichmentSources = [];
+  m.verificationSources = [m.platform || 'primary'];
+
   // 1. Try fetching their website if available
   if (m.url && m.platform === 'website') {
     const webContacts = await extractContactsFromWebsite(m.url);
-    
-    m.phone = m.phone || webContacts.phone;
-    m.email = m.email || webContacts.email;
+
+    if (webContacts.phone && !m.phone) { m.phone = webContacts.phone; m._phoneSources.push('website'); }
+    else if (webContacts.phone && m.phone) { m._phoneSources.push('website'); } // Confirmed on website too
+    if (webContacts.email && !m.email) { m.email = webContacts.email; m._emailSources.push('website'); }
+    else if (webContacts.email && m.email) { m._emailSources.push('website'); }
     m.whatsapp = m.whatsapp || webContacts.whatsapp;
     m.instagramHandle = m.instagramHandle || webContacts.instagram;
     m.facebookUrl = m.facebookUrl || webContacts.facebook;
     m.tiktokHandle = m.tiktokHandle || webContacts.tiktok;
     m.isCOD = webContacts.codMentioned;
     m.paymentGateway = webContacts.gateways;
+    m.verificationSources.push('website_scrape');
   }
 
-  // 2. Follow-up search for contact details
-  const enrichmentQuery = `"${m.businessName}" ${m.category || ''} contact phone email whatsapp`;
+  // 2. Follow-up DuckDuckGo search for contact details
+  const enrichmentQuery = `"${m.businessName}" ${m.category || ''} UAE contact phone email whatsapp`;
   const enrichmentResults = await safeSearch(enrichmentQuery);
-  
+
+  if (enrichmentResults.length > 0) {
+    m._enrichmentSources.push('duckduckgo');
+    m.verificationSources.push('duckduckgo');
+  }
+
   for (const res of enrichmentResults) {
     const snippet = res.description || '';
-    
+
     if (!m.phone) {
       const phoneMatch = snippet.match(/(?:\+971|00971|0)?(?:50|52|54|55|56|58|2|3|4|6|7|9)\d{7}/);
-      if (phoneMatch) m.phone = phoneMatch[0];
+      if (phoneMatch) { m.phone = phoneMatch[0]; m._phoneSources.push('duckduckgo'); }
     }
-    
+
     if (!m.email) {
       const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-      if (emailMatch) m.email = emailMatch[0];
+      if (emailMatch) { m.email = emailMatch[0]; m._emailSources.push('duckduckgo'); }
     }
-    
+
     if (!m.whatsapp) {
       const waMatch = snippet.match(/wa\.me\/(\d+)/);
       if (waMatch) m.whatsapp = waMatch[1];
+    }
+
+    // Extract physical address patterns (UAE-specific)
+    if (!m.physicalAddress) {
+      const addrMatch = snippet.match(/((?:Dubai|Abu Dhabi|Sharjah|Ajman|RAK|Fujairah|UAQ|Al Ain)[^,]*(?:,\s*UAE)?)/i);
+      if (addrMatch) m.physicalAddress = addrMatch[1].trim();
     }
 
     if (!m.isCOD) {
@@ -159,15 +181,22 @@ async function enrichMerchantContacts(m: any) {
   const rev = estimateRevenue(m.followers || 0, m.platform);
   m.estimatedRevenue = rev.monthly;
   m.setupFee = calculateSetupFee(rev.monthly);
-  
-  // 4. Scripts
+
+  // 4. Scripts — Arabic WhatsApp outreach mentioning MyFatoorah as COD alternative
   m.scripts = generateOutreachScripts(m);
-  
-  // 5. Advanced Scoring
-  m.qualityScore = computeQualityScore(m);
+
+  // 5. Weighted Evaluation Matrix + Multi-Source Verification
+  const weighted = computeWeightedScore(m);
+  const verification = computeVerification(m);
+
+  m.qualityScore = weighted.composite;
+  m.evaluationGrade = weighted.grade;
+  m.evaluationBreakdown = weighted.breakdown;
+  m.evaluationRecommendation = weighted.recommendation;
   m.reliabilityScore = computeReliabilityScore(m);
   m.complianceScore = computeComplianceScore(m);
   m.riskAssessment = computeRiskAssessment(m);
+  m.verification = verification;
 
   return m;
 }

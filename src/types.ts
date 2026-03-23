@@ -1,5 +1,5 @@
 export type RiskCategory = 'LOW' | 'MEDIUM' | 'HIGH';
-export type ValidationStatus = 'VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
+export type ValidationStatus = 'VERIFIED' | 'PARTIALLY_VERIFIED' | 'UNVERIFIED' | 'DISCREPANCY';
 export type ExclusionStatus = 'ACTIVE' | 'EXCLUDED' | 'BLACKLISTED';
 
 export interface ContactValidation {
@@ -129,11 +129,31 @@ export interface Merchant {
   paymentGateway?: string;
   duplicateReason?: string;
   status?: string;
+  evaluationGrade?: 'A' | 'B' | 'C' | 'D' | 'F';
+  evaluationBreakdown?: {
+    contactQuality: { score: number; weight: number; weighted: number };
+    paymentReadiness: { score: number; weight: number; weighted: number };
+    businessLegitimacy: { score: number; weight: number; weighted: number };
+    socialPresence: { score: number; weight: number; weighted: number };
+    revenuePotential: { score: number; weight: number; weighted: number };
+    riskFactors: { score: number; weight: number; weighted: number };
+  };
+  evaluationRecommendation?: string;
+  verification?: {
+    status: string;
+    sourcesConfirmed: number;
+    totalSources: number;
+    details: { field: string; sources: string[]; verified: boolean }[];
+  };
 }
+
+export const UAE_EMIRATES = ['All', 'Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman', 'Ras Al Khaimah', 'Fujairah', 'Umm Al Quwain', 'Al Ain'] as const;
+export type Emirate = typeof UAE_EMIRATES[number];
 
 export interface SearchParams {
   keywords: string;
   location: string;
+  emirate: Emirate;
   categories: string[];
   subCategories: string[];
   businessAge?: '<1y' | '1-3y' | '>3y' | 'unknown';

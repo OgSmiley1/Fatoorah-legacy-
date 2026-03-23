@@ -98,20 +98,36 @@ async function startServer() {
       return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
     }
 
-    const { keywords, location, maxResults } = req.body;
+    const { keywords, location, maxResults, emirate } = req.body;
+    const targetLocation = emirate && emirate !== 'All' ? emirate : (location || 'UAE');
+
     try {
       const ai = new GoogleGenAI({ apiKey });
-      const prompt = `Find ${maxResults || 30} real, active merchants/businesses in ${location || 'UAE'} related to: ${keywords}.
+      const prompt = `Find ${maxResults || 30} real, currently active merchants and businesses in ${targetLocation}, United Arab Emirates related to: ${keywords}.
 
 CRITICAL REQUIREMENTS:
-- Only return REAL businesses that currently exist in the UAE
-- Each must have at least one contact method (phone number starting with +971 or 05, email, or WhatsApp)
-- Diversify across different categories if keywords are broad
-- Include their Instagram handle if they have one
-- Include their website URL if they have one
-- Focus on SMEs and local businesses, NOT international chains
+- Only return REAL businesses with verifiable contact information
+- Each MUST have at least one: phone number (UAE format +971 or 05x), email, or WhatsApp number
+- Prioritize businesses that offer Cash on Delivery (COD) or currently lack online payment gateways — these are high-value leads for payment solution providers
+- Include their Instagram handle (@handle format) if they have one
+- Include their website URL if available
+- Focus on local SMEs, home businesses, Instagram sellers, and independent retailers — NOT international chains
+- Diversify across at least 5 different business categories
+- For each business, note whether they appear to accept COD payments
 
-For each merchant provide: businessName, platform (instagram/facebook/tiktok/website), url, instagramHandle, phone, email, category, physicalAddress, and a short evidence snippet explaining why this is a real business.`;
+For each merchant provide:
+- businessName: The actual registered or trading name
+- platform: Where you found them (instagram, facebook, tiktok, website)
+- url: Direct link to their profile or website
+- instagramHandle: Their Instagram username without @
+- phone: UAE phone number (+971 format preferred)
+- email: Business email address
+- category: Specific category (e.g., "Handmade Jewelry", "Cloud Kitchen", "Luxury Abayas")
+- physicalAddress: Their location/address in the UAE
+- isCOD: Whether they appear to offer Cash on Delivery ("true" or "false")
+- evidence: A short snippet explaining why this is a real, active business
+- website: Their website URL if different from main url
+- whatsapp: WhatsApp number if different from phone`;
 
       const response = await ai.models.generateContent({
         model: "gemini-2.0-flash",
@@ -135,6 +151,7 @@ For each merchant provide: businessName, platform (instagram/facebook/tiktok/web
                 physicalAddress: { type: Type.STRING },
                 category: { type: Type.STRING },
                 dulNumber: { type: Type.STRING },
+                isCOD: { type: Type.STRING },
                 evidence: { type: Type.STRING },
                 website: { type: Type.STRING },
                 whatsapp: { type: Type.STRING }
@@ -151,18 +168,42 @@ For each merchant provide: businessName, platform (instagram/facebook/tiktok/web
       }
 
       const merchants = JSON.parse(text);
-      const enriched = merchants.map((m: any) => ({
-        ...m,
-        whatsapp: m.whatsapp || m.phone,
-        location: location || 'UAE',
-        evidence: [{ title: "AI Verified", uri: m.url, snippet: m.evidence || "Found via Gemini AI search" }],
-        contactValidation: {
-          status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
-          sources: ["Gemini AI", m.platform]
-        }
-      }));
+      const { computeWeightedScore, computeRiskAssessment: riskAssess, computeVerification } = await import('./server/scoringService');
 
-      logger.info('ai_search_completed', { keywords, location, count: enriched.length });
+      const enriched = merchants.map((m: any) => {
+        const isCOD = m.isCOD === 'true' || m.isCOD === true;
+        const merchantData = {
+          ...m,
+          isCOD,
+          whatsapp: m.whatsapp || m.phone,
+          location: targetLocation,
+          verificationSources: ['gemini_ai', 'google_search'],
+          _phoneSources: m.phone ? ['gemini_ai'] : [],
+          _emailSources: m.email ? ['gemini_ai'] : [],
+          _enrichmentSources: ['google_search'],
+        };
+
+        const weighted = computeWeightedScore(merchantData);
+        const risk = riskAssess(merchantData);
+        const verification = computeVerification(merchantData);
+
+        return {
+          ...merchantData,
+          qualityScore: weighted.composite,
+          evaluationGrade: weighted.grade,
+          evaluationBreakdown: weighted.breakdown,
+          evaluationRecommendation: weighted.recommendation,
+          risk,
+          verification,
+          evidence: [{ title: "AI + Google Search Verified", uri: m.url, snippet: m.evidence || "Found via Gemini AI with Google Search grounding" }],
+          contactValidation: {
+            status: verification.status === 'VERIFIED' ? 'VERIFIED' : (m.phone || m.email) ? 'PARTIALLY_VERIFIED' : 'UNVERIFIED',
+            sources: ["Gemini AI", "Google Search", m.platform]
+          }
+        };
+      });
+
+      logger.info('ai_search_completed', { keywords, location: targetLocation, count: enriched.length });
       res.json({ merchants: enriched });
     } catch (error: any) {
       logger.error('ai_search_failed', { keywords, error: error.message });
@@ -502,6 +543,79 @@ For each merchant provide: businessName, platform (instagram/facebook/tiktok/web
 
   // --- VITE / STATIC SERVING ---
 
+  // Enhanced CSV export — must be before Vite middleware
+  // (Vite would intercept /api/export-csv otherwise in dev mode)
+  app.get('/api/export-csv', (req, res) => {
+    try {
+      const leads = db.prepare(`
+        SELECT
+          m.business_name, m.category, m.city, m.phone, m.email, m.whatsapp,
+          m.instagram_handle, m.facebook_url, m.tiktok_handle, m.physical_address,
+          m.source_url, m.source_platform, m.dul_number, m.quality_score,
+          m.reliability_score, m.compliance_score, m.confidence_score,
+          m.contactability_score, m.myfatoorah_fit_score, m.payment_gateway,
+          m.estimated_revenue, m.setup_fee, m.risk_assessment_json,
+          m.contact_validation_json, m.metadata_json,
+          l.status, l.created_at
+        FROM leads l
+        JOIN merchants m ON l.merchant_id = m.id
+        ORDER BY m.quality_score DESC, l.created_at DESC
+      `).all() as any[];
+
+      if (leads.length === 0) {
+        return res.status(404).send('No leads to export');
+      }
+
+      const safeParse = (json: string | null, fallback: any) => {
+        if (!json) return fallback;
+        try { return JSON.parse(json); } catch { return fallback; }
+      };
+
+      const headers = [
+        'Business Name', 'Emirate', 'Category', 'Phone', 'WhatsApp', 'Email',
+        'Instagram', 'Facebook', 'TikTok', 'Address', 'DUL Number',
+        'COD Status', 'Verification Level', 'Composite Score', 'Grade',
+        'Contact Score', 'Reliability Score', 'Compliance Score',
+        'Payment Gateway', 'Est. Revenue (AED/mo)', 'Risk Level', 'Risk Flags',
+        'Platform', 'Source URL', 'Status', 'Discovered At'
+      ];
+
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return "";
+        const str = String(val);
+        return (str.includes(",") || str.includes("\"") || str.includes("\n"))
+          ? `"${str.replace(/"/g, '""')}"` : str;
+      };
+
+      const rows = leads.map((l: any) => {
+        const risk = safeParse(l.risk_assessment_json, { category: 'LOW', factors: [] });
+        const validation = safeParse(l.contact_validation_json, { status: 'UNVERIFIED' });
+        const meta = safeParse(l.metadata_json, {});
+        const isCOD = meta.isCOD ? 'YES' : 'NO';
+        const score = l.quality_score || 0;
+        const grade = score >= 80 ? 'A' : score >= 65 ? 'B' : score >= 50 ? 'C' : score >= 35 ? 'D' : 'F';
+
+        return [
+          l.business_name, l.city || '', l.category, l.phone, l.whatsapp, l.email,
+          l.instagram_handle, l.facebook_url, l.tiktok_handle, l.physical_address, l.dul_number,
+          isCOD, validation.status, score, grade,
+          l.contactability_score, l.reliability_score, l.compliance_score,
+          l.payment_gateway, l.estimated_revenue, risk.category,
+          (risk.factors || []).join('; '),
+          l.source_platform, l.source_url, l.status, l.created_at
+        ].map(escapeCsv).join(',');
+      });
+
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename=MyFatoorah_Leads_${new Date().toISOString().split('T')[0]}.csv`);
+      res.status(200).send(csvContent);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // --- VITE / STATIC SERVING (must be AFTER all API routes) ---
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -512,53 +626,6 @@ For each merchant provide: businessName, platform (instagram/facebook/tiktok/web
     app.use(express.static("dist"));
     app.get("*", (req, res) => res.sendFile("dist/index.html", { root: "." }));
   }
-
-  // Export leads to CSV
-  app.get('/api/export-csv', (req, res) => {
-    try {
-      const leads = db.prepare(`
-        SELECT 
-          m.business_name, m.category, m.phone, m.email, m.whatsapp, 
-          m.instagram_handle, m.facebook_url, m.tiktok_handle, m.physical_address,
-          m.source_url, m.dul_number, l.status, l.created_at
-        FROM leads l
-        JOIN merchants m ON l.merchant_id = m.id
-        ORDER BY l.created_at DESC
-      `).all() as any[];
-
-      if (leads.length === 0) {
-        return res.status(404).send('No leads to export');
-      }
-
-      const headers = [
-        'Business Name', 'Category', 'Phone', 'Email', 'WhatsApp', 
-        'Instagram', 'Facebook', 'TikTok', 'Address', 
-        'Source URL', 'DUL Number', 'Status', 'Discovered At'
-      ];
-
-      const escapeCsv = (val: any) => {
-        if (val === null || val === undefined) return "";
-        const str = String(val);
-        return (str.includes(",") || str.includes("\"") || str.includes("\n")) 
-          ? `"${str.replace(/"/g, '""')}"` 
-          : str;
-      };
-
-      const rows = leads.map((l: any) => [
-        l.business_name, l.category, l.phone, l.email, l.whatsapp, 
-        l.instagram_handle, l.facebook_url, l.tiktok_handle, l.physical_address,
-        l.source_url, l.dul_number, l.status, l.created_at
-      ].map(escapeCsv).join(','));
-
-      const csvContent = [headers.join(','), ...rows].join('\n');
-
-      res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=leads_export.csv');
-      res.status(200).send(csvContent);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
-    }
-  });
 
   httpServer.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
