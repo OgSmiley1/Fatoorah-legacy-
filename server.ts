@@ -18,6 +18,9 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
   
+  if (!process.env.SESSION_SECRET) {
+    console.warn('[WARN] SESSION_SECRET not set. Using default secret. Set SESSION_SECRET env var for production.');
+  }
   app.use(session({
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
@@ -67,7 +70,7 @@ async function startServer() {
     });
   });
 
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000');
 
   // --- API ROUTES ---
 

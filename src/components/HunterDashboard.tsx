@@ -137,29 +137,33 @@ export const HunterDashboard: React.FC = () => {
   const handleSearch = async (overrideKeywords?: string) => {
     const searchKeywords = overrideKeywords || params.keywords;
     if (!searchKeywords) return;
-    
+
     setLoading(true);
     try {
-      const searchParams = overrideKeywords 
+      const searchParams = overrideKeywords
         ? { ...params, keywords: overrideKeywords }
         : params;
 
+      // Helper: race a promise against a timeout
+      const withTimeout = <T,>(promise: Promise<T>, ms: number, fallback: T): Promise<T> =>
+        Promise.race([promise, new Promise<T>(resolve => setTimeout(() => resolve(fallback), ms))]);
+
       let results: Merchant[] = [];
-      
-      // Strategy 1: Client-side AI Search (Resilient & Grounded)
+
+      // Strategy 1: Client-side AI Search (30s timeout)
       console.log("Starting AI Search...");
-      const aiResults = await geminiService.aiSearchMerchants(searchParams);
-      
+      const aiResults = await withTimeout(geminiService.aiSearchMerchants(searchParams), 30_000, []);
+
       if (aiResults.length > 0) {
         console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
+        const ingestResult = await withTimeout(geminiService.ingestMerchants(aiResults, searchKeywords, params.location), 15_000, { merchants: [] });
         results = ingestResult.merchants;
       }
 
-      // Strategy 2: Fallback to Server-side Scraper if AI found too few
+      // Strategy 2: Fallback to Server-side Scraper if AI found too few (90s timeout)
       if (results.length < (params.maxResults || 10) / 2) {
         console.log("Falling back to server-side scraper...");
-        const scraperResults = await geminiService.searchMerchants(searchParams);
+        const scraperResults = await withTimeout(geminiService.searchMerchants(searchParams), 90_000, []);
         // Merge results, avoiding duplicates
         const seenIds = new Set(results.map(r => r.id));
         const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
@@ -167,22 +171,22 @@ export const HunterDashboard: React.FC = () => {
       }
 
       setMerchants(results);
-      
+
       // Save to history
       saveSearch({
-        sessionId: Math.random().toString(36).substr(2, 9),
+        sessionId: Math.random().toString(36).slice(2, 11),
         query: searchKeywords,
         location: params.location,
         category: params.categories.join(', '),
         resultsCount: results.length
       });
-      
+
       refreshStats();
-      
+
       if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', { 
-          merchants: results, 
-          query: searchKeywords 
+        socketRef.current.emit('hunt-finished', {
+          merchants: results,
+          query: searchKeywords
         });
       }
     } catch (e) {

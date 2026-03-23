@@ -26,7 +26,9 @@ function getRandomUserAgent() {
 }
 
 async function googleSearch(category = '', location = 'All'): Promise<any[]> {
-  const locations = (location === 'All') ? EMIRATES : [location];
+  // Limit to 3 emirates max to avoid extremely long search times
+  const allLocations = (location === 'All') ? EMIRATES : [location];
+  const locations = allLocations.slice(0, 3);
   let allResults: any[] = [];
 
   for (const emirate of locations) {
@@ -218,14 +220,13 @@ interface SearchParams {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-async function safeSearch(query: string, retries = 3): Promise<any[]> {
+async function safeSearch(query: string, retries = 2): Promise<any[]> {
   for (let i = 0; i <= retries; i++) {
     try {
-      // Add a significant delay before each attempt to cool down
-      // First attempt: 2-4s, subsequent attempts: 10s, 20s, 30s...
-      const initialDelay = i === 0 ? 1000 : 8000 * i;
-      await sleep(initialDelay + Math.random() * 3000);
-      
+      // Short delay before each attempt
+      const initialDelay = i === 0 ? 500 : 2000 * i;
+      await sleep(initialDelay + Math.random() * 1000);
+
       const results = await search(query, { safeSearch: 0 });
       return results.results || [];
     } catch (error: any) {
@@ -233,8 +234,8 @@ async function safeSearch(query: string, retries = 3): Promise<any[]> {
         logger.error('search_strategy_failed', { query, error: error.message });
         return [];
       }
-      // Aggressive backoff: 15s, 30s, 45s...
-      const delay = 15000 * (i + 1) + Math.random() * 10000; 
+      // Backoff: 3s, 6s
+      const delay = 3000 * (i + 1) + Math.random() * 2000;
       logger.warn('search_retry', { query, attempt: i + 1, delay });
       await sleep(delay);
     }
@@ -243,10 +244,15 @@ async function safeSearch(query: string, retries = 3): Promise<any[]> {
 }
 
 export async function huntMerchants(params: SearchParams, onProgress?: (count: number) => void) {
-  const { keywords, location, maxResults = 50 } = params;
+  const maxResults = Math.min(params.maxResults || 50, 100);
+  const { keywords, location } = params;
   const runId = uuidv4();
-  
+
   logger.info('hunt_started', { runId, keywords, location, maxResults });
+
+  // Global timeout: abort after 60 seconds
+  const deadline = Date.now() + 60_000;
+  const isTimedOut = () => Date.now() > deadline;
 
   try {
     const discoveredMerchants = [];
@@ -261,8 +267,11 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
       { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
     ];
 
+    let consecutiveFailures = 0;
     for (const variation of queryVariations) {
       if (discoveredMerchants.length >= maxResults) break;
+      if (isTimedOut()) { logger.warn('hunt_timeout', { runId }); break; }
+      if (consecutiveFailures >= 2) { logger.warn('hunt_too_many_failures', { runId }); break; }
 
       logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
       
@@ -302,6 +311,12 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         results = await safeSearch(variation.query);
       }
       
+      if (results.length === 0) {
+        consecutiveFailures++;
+      } else {
+        consecutiveFailures = 0;
+      }
+
       for (const result of results) {
         if (seenUrls.has(result.url)) continue;
         seenUrls.add(result.url);
@@ -330,7 +345,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         const phone = phoneMatch ? phoneMatch[1] : null;
 
         const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const email = emailMatch ? emailMatch[1] : null;
+        const email = emailMatch ? emailMatch[0] : null;
 
         const merchantData = {
           businessName,
@@ -349,8 +364,8 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
           isCOD: false,
         };
 
-        // Enrich contacts in background (or sequentially if we want accuracy now)
-        const enriched = await enrichMerchantContacts(merchantData);
+        // Enrich contacts (skip if running low on time)
+        const enriched = isTimedOut() ? merchantData : await enrichMerchantContacts(merchantData);
         discoveredMerchants.push(enriched);
 
         if (onProgress) onProgress(discoveredMerchants.length);
@@ -366,11 +381,8 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
     const finalMerchants = [];
     let newLeadsCount = 0;
 
-    // Deduplicate and save
+    // Deduplicate against existing DB records and save
     for (const m of discoveredMerchants) {
-      if (seenUrls.has(m.url)) continue;
-      seenUrls.add(m.url);
-
       const dupCheck = checkDuplicate(m);
       if (!dupCheck.isDuplicate) {
         const merchantId = uuidv4();
