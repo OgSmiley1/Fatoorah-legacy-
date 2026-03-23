@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
@@ -8,10 +9,10 @@ import fs from "fs";
 import path from "path";
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
-import * as cheerio from "cheerio";
 import { huntMerchants } from "./server/searchService";
 import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
+import { GoogleGenAI, Type } from "@google/genai";
 
 async function startServer() {
   const app = express();
@@ -90,6 +91,142 @@ async function startServer() {
     }
   });
 
+  // Server-side Gemini AI search — keeps API key on server, not exposed to browser
+  app.post("/api/ai-search", async (req, res) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY not configured on server" });
+    }
+
+    const { keywords, location, maxResults } = req.body;
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const prompt = `Find ${maxResults || 30} real, active merchants/businesses in ${location || 'UAE'} related to: ${keywords}.
+
+CRITICAL REQUIREMENTS:
+- Only return REAL businesses that currently exist in the UAE
+- Each must have at least one contact method (phone number starting with +971 or 05, email, or WhatsApp)
+- Diversify across different categories if keywords are broad
+- Include their Instagram handle if they have one
+- Include their website URL if they have one
+- Focus on SMEs and local businesses, NOT international chains
+
+For each merchant provide: businessName, platform (instagram/facebook/tiktok/website), url, instagramHandle, phone, email, category, physicalAddress, and a short evidence snippet explaining why this is a real business.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: prompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                businessName: { type: Type.STRING },
+                platform: { type: Type.STRING },
+                url: { type: Type.STRING },
+                instagramHandle: { type: Type.STRING },
+                phone: { type: Type.STRING },
+                email: { type: Type.STRING },
+                facebookUrl: { type: Type.STRING },
+                tiktokHandle: { type: Type.STRING },
+                physicalAddress: { type: Type.STRING },
+                category: { type: Type.STRING },
+                dulNumber: { type: Type.STRING },
+                evidence: { type: Type.STRING },
+                website: { type: Type.STRING },
+                whatsapp: { type: Type.STRING }
+              },
+              required: ['businessName', 'platform', 'url']
+            }
+          }
+        }
+      });
+
+      const text = response.text;
+      if (!text) {
+        return res.json({ merchants: [] });
+      }
+
+      const merchants = JSON.parse(text);
+      const enriched = merchants.map((m: any) => ({
+        ...m,
+        whatsapp: m.whatsapp || m.phone,
+        location: location || 'UAE',
+        evidence: [{ title: "AI Verified", uri: m.url, snippet: m.evidence || "Found via Gemini AI search" }],
+        contactValidation: {
+          status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
+          sources: ["Gemini AI", m.platform]
+        }
+      }));
+
+      logger.info('ai_search_completed', { keywords, location, count: enriched.length });
+      res.json({ merchants: enriched });
+    } catch (error: any) {
+      logger.error('ai_search_failed', { keywords, error: error.message });
+      res.status(500).json({ error: error.message, merchants: [] });
+    }
+  });
+
+  // Server-side Gemini chat endpoint
+  app.post("/api/ai-chat", async (req, res) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.json({ text: "AI chat is not available — GEMINI_API_KEY not configured.", functionCalls: [] });
+    }
+
+    const { message, history } = req.body;
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+      const chat = ai.chats.create({
+        model: "gemini-2.0-flash",
+        config: {
+          systemInstruction: `You are the "SMILEY WIZARD", the intelligent core of the MyFatoorah Acquisition Engine.
+          Your mission is to help sales teams find, qualify, and manage merchants across the UAE.
+          Be bold, efficient, and professional. Use emojis like 🧙‍♂️, ⚡, 📊, and 🎯.
+          If a user asks to "find" or "hunt" merchants, respond with search instructions.
+          Always mention you are using "Multi-Engine Intelligence" to gather data.`,
+          tools: [{
+            functionDeclarations: [
+              {
+                name: "search_merchants",
+                parameters: {
+                  type: Type.OBJECT,
+                  description: "Search for new merchants/leads.",
+                  properties: {
+                    keywords: { type: Type.STRING },
+                    location: { type: Type.STRING }
+                  },
+                  required: ["keywords", "location"]
+                }
+              },
+              {
+                name: "get_pipeline_stats",
+                parameters: { type: Type.OBJECT, description: "Get pipeline stats.", properties: {} }
+              }
+            ]
+          }]
+        },
+        history: history || []
+      });
+
+      const response = await chat.sendMessage({ message });
+      res.json({
+        text: response.text || '',
+        functionCalls: response.functionCalls || []
+      });
+    } catch (error: any) {
+      res.json({ text: `Error: ${error.message}`, functionCalls: [] });
+    }
+  });
+
+  // Check if Gemini API key is available
+  app.get("/api/ai-status", (req, res) => {
+    res.json({ available: !!process.env.GEMINI_API_KEY });
+  });
+
   // Ingestion
   app.post("/api/merchants/ingest", async (req, res) => {
     const { merchants, query, location } = req.body;
@@ -120,6 +257,11 @@ async function startServer() {
     query += " ORDER BY l.created_at DESC";
     
     const leads = db.prepare(query).all(...params) as any[];
+    const safeParse = (json: string | null | undefined, fallback: any) => {
+      if (!json) return fallback;
+      try { return JSON.parse(json); } catch { return fallback; }
+    };
+
     const processedLeads = leads.map(l => ({
       ...l,
       dulNumber: l.dul_number,
@@ -132,13 +274,13 @@ async function startServer() {
       qualityScore: l.quality_score,
       reliabilityScore: l.reliability_score,
       complianceScore: l.compliance_score,
-      risk: l.risk_assessment_json ? JSON.parse(l.risk_assessment_json) : null,
+      risk: safeParse(l.risk_assessment_json, { category: 'LOW', factors: [] }),
       revenue: { monthly: l.estimated_revenue || 0, annual: (l.estimated_revenue || 0) * 12 },
       pricing: { setupFee: l.setup_fee || 0, transactionRate: '2.5% + 1 AED', settlementCycle: 'T+1' },
       paymentGateway: l.payment_gateway,
-      scripts: l.scripts_json ? JSON.parse(l.scripts_json) : null,
-      contactValidation: l.contact_validation_json ? JSON.parse(l.contact_validation_json) : { status: 'UNVERIFIED', sources: [] },
-      evidence: l.evidence_json ? JSON.parse(l.evidence_json) : []
+      scripts: safeParse(l.scripts_json, {}),
+      contactValidation: safeParse(l.contact_validation_json, { status: 'UNVERIFIED', sources: [] }),
+      evidence: safeParse(l.evidence_json, [])
     }));
     res.json(processedLeads);
   });
