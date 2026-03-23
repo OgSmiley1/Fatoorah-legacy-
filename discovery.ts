@@ -57,21 +57,33 @@ export async function ingestMerchants(params: {
 
       const merchantId = isDuplicate ? existingId : uuidv4();
       
+      const qualityScore = Math.round((contactScore * 0.4 + fitScore * 0.3 + confidenceScore * 0.3));
+      const estimatedRevenue = raw.revenue?.monthly || 0;
+      const setupFee = raw.pricing?.setupFee || 0;
+      const paymentGateway = raw.paymentGateway || raw.paymentMethods?.join(', ') || null;
+
       if (!isDuplicate) {
         db.prepare(`
           INSERT INTO merchants (
-            id, business_name, normalized_name, source_platform, source_url, 
-            category, subcategory, country, city, website, phone, whatsapp, 
-            email, instagram_handle, github_url, dul_number, confidence_score, 
-            contactability_score, myfatoorah_fit_score, evidence_json, contact_validation_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, business_name, normalized_name, source_platform, source_url,
+            category, subcategory, country, city, website, phone, whatsapp,
+            email, instagram_handle, github_url, dul_number, confidence_score,
+            contactability_score, myfatoorah_fit_score, quality_score,
+            risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
+            scripts_json, evidence_json, contact_validation_json, metadata_json,
+            physical_address, tiktok_handle, facebook_url
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, raw.businessName, normalizedName, raw.platform, raw.url,
           raw.category, raw.subcategory, params.location, raw.location, raw.website,
           raw.phone, raw.whatsapp, raw.email, raw.instagramHandle, raw.githubUrl,
-          raw.dulNumber || null, confidenceScore, contactScore, fitScore, 
+          raw.dulNumber || null, confidenceScore, contactScore, fitScore, qualityScore,
+          JSON.stringify(risk), estimatedRevenue, setupFee, paymentGateway,
+          JSON.stringify(scripts),
           JSON.stringify(raw.evidence || []),
-          JSON.stringify(raw.contactValidation || { status: 'UNVERIFIED', sources: [] })
+          JSON.stringify(raw.contactValidation || { status: 'UNVERIFIED', sources: [] }),
+          JSON.stringify({ isCOD: raw.isCOD || false, ...raw.metadata }),
+          raw.physicalAddress || null, raw.tiktokHandle || null, raw.facebookUrl || null
         );
 
         db.prepare(`
