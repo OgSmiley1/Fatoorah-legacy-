@@ -25,53 +25,13 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-async function googleSearch(category = '', location = 'All'): Promise<any[]> {
-  // Limit to 3 emirates max to avoid extremely long search times
-  const allLocations = (location === 'All') ? EMIRATES : [location];
-  const locations = allLocations.slice(0, 3);
-  let allResults: any[] = [];
-
-  for (const emirate of locations) {
-    try {
-      const query = `${category || 'instagram shop online store'} ${emirate} (instagram OR website OR متجر) (${COD_KEYWORDS.join(' OR ')})`;
-      const ua = getRandomUserAgent();
-
-      await new Promise(r => setTimeout(r, ANTI_BAN_DELAY()));
-
-      const { data } = await axios.get(`https://www.google.com/search?q=${encodeURIComponent(query)}&num=20&hl=ar`, {
-        headers: {
-          'User-Agent': ua,
-          'Accept-Language': 'ar,en-US,en',
-          'Referer': 'https://www.google.com'
-        },
-        timeout: 10000
-      });
-
-      const $ = cheerio.load(data);
-      const results = $('.g').map((_, el) => ({
-        title: $(el).find('h3').first().text().trim(),
-        url: $(el).find('a').first().attr('href') || '',
-        description: $(el).find('.VwiC3b').text().trim()
-      })).get();
-
-      const filtered = results.filter(r => 
-        r.url.includes('http') && 
-        (r.url.includes('.ae') || COD_KEYWORDS.some(kw => r.description.toLowerCase().includes(kw.toLowerCase())) || r.description.includes('instagram'))
-      );
-
-      allResults = [...allResults, ...filtered];
-    } catch (error: any) {
-      logger.error('google_search_failed', { emirate, error: error.message });
-    }
-  }
-
-  return allResults.slice(0, 150);
-}
+// Google scraping removed — CSS selectors are outdated and return 0 results.
+// All search strategies now use DuckDuckGo (safeSearch) which is more reliable.
 
 async function extractContactsFromWebsite(url: string) {
   try {
     const ua = getRandomUserAgent();
-    const { data } = await axios.get(url, { headers: { 'User-Agent': ua }, timeout: 8000 });
+    const { data } = await axios.get(url, { headers: { 'User-Agent': ua }, timeout: 5000 });
 
     const $ = cheerio.load(data);
     const html = data.toLowerCase();
@@ -261,9 +221,9 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
     // We'll try up to 5 different query variations to get more results if needed
     const queryVariations = [
       { type: 'DDG', query: `${keywords} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com)` },
-      { type: 'GOOGLE_MULTI', query: keywords },
+      { type: 'DDG', query: `${keywords} ${location} contact phone email whatsapp` },
       { type: 'DDG', query: `${keywords} ${location} business directory` },
-      { type: 'GOOGLE', query: `${keywords} ${location} retailers` },
+      { type: 'DDG', query: `${keywords} ${location} online store shop website` },
       { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
     ];
 
@@ -290,22 +250,6 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
             category: r.category,
             dulNumber: r.dulNumber
           }));
-        }
-      } else if (variation.type === 'GOOGLE_MULTI') {
-        results = await googleSearch(variation.query, location);
-      } else if (variation.type === 'GOOGLE') {
-        // Simple single google search
-        try {
-          const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
-          const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
-          const $ = cheerio.load(data);
-          results = $('.g').map((_, el) => ({
-            title: $(el).find('h3').first().text().trim(),
-            url: $(el).find('a').first().attr('href') || '',
-            description: $(el).find('.VwiC3b').text().trim()
-          })).get().filter(r => r.url.startsWith('http'));
-        } catch (e) {
-          logger.error('google_single_search_failed', { query: variation.query });
         }
       } else {
         results = await safeSearch(variation.query);

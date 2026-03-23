@@ -36,11 +36,8 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   const [ghUpdates, setGhUpdates] = React.useState<any[]>([]);
   const [loadingGh, setLoadingGh] = React.useState(false);
 
-  React.useEffect(() => {
-    if (merchant.githubUrl) {
-      fetchGithubUpdates();
-    }
-  }, [merchant.githubUrl]);
+  // GitHub auto-fetch disabled to avoid rate limiting (60 req/hr unauthenticated).
+  // Users can click the button manually if needed.
 
   const fetchGithubUpdates = async () => {
     if (!merchant.githubUrl) return;

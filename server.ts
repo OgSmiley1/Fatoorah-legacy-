@@ -8,7 +8,6 @@ import fs from "fs";
 import path from "path";
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
-import * as cheerio from "cheerio";
 import { huntMerchants } from "./server/searchService";
 import { logger } from "./server/logger";
 import { computeFitScore } from "./server/scoringService";
@@ -120,6 +119,11 @@ async function startServer() {
     query += " ORDER BY l.created_at DESC";
     
     const leads = db.prepare(query).all(...params) as any[];
+    const safeParse = (json: string | null | undefined, fallback: any) => {
+      if (!json) return fallback;
+      try { return JSON.parse(json); } catch { return fallback; }
+    };
+
     const processedLeads = leads.map(l => ({
       ...l,
       dulNumber: l.dul_number,
@@ -132,13 +136,13 @@ async function startServer() {
       qualityScore: l.quality_score,
       reliabilityScore: l.reliability_score,
       complianceScore: l.compliance_score,
-      risk: l.risk_assessment_json ? JSON.parse(l.risk_assessment_json) : null,
+      risk: safeParse(l.risk_assessment_json, { category: 'LOW', factors: [] }),
       revenue: { monthly: l.estimated_revenue || 0, annual: (l.estimated_revenue || 0) * 12 },
       pricing: { setupFee: l.setup_fee || 0, transactionRate: '2.5% + 1 AED', settlementCycle: 'T+1' },
       paymentGateway: l.payment_gateway,
-      scripts: l.scripts_json ? JSON.parse(l.scripts_json) : null,
-      contactValidation: l.contact_validation_json ? JSON.parse(l.contact_validation_json) : { status: 'UNVERIFIED', sources: [] },
-      evidence: l.evidence_json ? JSON.parse(l.evidence_json) : []
+      scripts: safeParse(l.scripts_json, {}),
+      contactValidation: safeParse(l.contact_validation_json, { status: 'UNVERIFIED', sources: [] }),
+      evidence: safeParse(l.evidence_json, [])
     }));
     res.json(processedLeads);
   });
