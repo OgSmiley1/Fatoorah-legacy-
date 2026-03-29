@@ -86,6 +86,8 @@ export async function extractContactsFromWebsite(url: string) {
     const instagram = $('a[href*="instagram.com"]').first().attr('href') || '';
     const facebook = $('a[href*="facebook.com"]').first().attr('href') || '';
     const tiktok = $('a[href*="tiktok.com"]').first().attr('href') || '';
+    const linkedinRaw = $('a[href*="linkedin.com/company"], a[href*="linkedin.com/in"]').first().attr('href') || '';
+    const twitterRaw = $('a[href*="twitter.com"], a[href*="x.com"]').first().attr('href') || '';
 
     const codMentioned = COD_KEYWORDS.some(kw => html.includes(kw.toLowerCase()));
 
@@ -107,6 +109,8 @@ export async function extractContactsFromWebsite(url: string) {
       instagram: instagram.match(/instagram\.com\/([^\/\?]+)/)?.[1] || null,
       facebook: facebook.match(/facebook\.com\/([^\/\?]+)/)?.[1] || null,
       tiktok: tiktok.match(/tiktok\.com\/@?([^\/\?]+)/)?.[1] || null,
+      linkedinUrl: linkedinRaw || null,
+      twitterHandle: twitterRaw.match(/(?:twitter|x)\.com\/@?([^\/\?]+)/)?.[1] || null,
       codMentioned,
       gateways: gateways.join(', ') || 'None detected',
       confidence: codMentioned ? 'HIGH COD 🔥' : (phones.length > 0 ? 'Medium' : 'Low')
@@ -167,6 +171,8 @@ export async function enrichMerchantContacts(m: any) {
     m.instagramHandle = m.instagramHandle || webContacts.instagram;
     m.facebookUrl = m.facebookUrl || webContacts.facebook;
     m.tiktokHandle = m.tiktokHandle || webContacts.tiktok;
+    m.linkedinUrl = m.linkedinUrl || webContacts.linkedinUrl;
+    m.twitterHandle = m.twitterHandle || webContacts.twitterHandle;
     m.isCOD = webContacts.codMentioned;
     m.paymentGateway = webContacts.gateways;
   }
@@ -252,6 +258,8 @@ export async function huntMerchants(
   try {
     const discoveredMerchants = [];
     const seenUrls = new Set();
+    // Cross-source tracking: normalizedName → Set of variation types that found it
+    const sourceMap = new Map<string, Set<string>>();
     
     // We'll try up to 5 different query variations to get more results if needed
     const queryVariations = [
@@ -284,21 +292,26 @@ export async function huntMerchants(
           }));
         }
       } else if (variation.type === 'GOOGLE_MULTI') {
-        results = await googleSearch(variation.query, location) || [];
+        // Gated: only run if explicitly enabled (fragile, may violate ToS)
+        if (process.env.USE_GOOGLE_SCRAPING === 'true') {
+          results = await googleSearch(variation.query, location) || [];
+        }
       } else if (variation.type === 'GOOGLE') {
-        // Simple single google search
-        try {
-          const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
-          const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
-          const $ = cheerio.load(data);
-          results = $('.g').map((_, el) => ({
-            title: $(el).find('h3').first().text().trim(),
-            url: $(el).find('a').first().attr('href') || '',
-            description: $(el).find('.VwiC3b').text().trim()
-          })).get().filter(r => r.url.startsWith('http')) || [];
-        } catch (e) {
-          logger.error('google_single_search_failed', { query: variation.query });
-          results = [];
+        // Gated: only run if explicitly enabled
+        if (process.env.USE_GOOGLE_SCRAPING === 'true') {
+          try {
+            const url = `https://www.google.com/search?q=${encodeURIComponent(variation.query)}&num=20`;
+            const { data } = await axios.get(url, { headers: { 'User-Agent': getRandomUserAgent() } });
+            const $ = cheerio.load(data);
+            results = $('.g').map((_, el) => ({
+              title: $(el).find('h3').first().text().trim(),
+              url: $(el).find('a').first().attr('href') || '',
+              description: $(el).find('.VwiC3b').text().trim()
+            })).get().filter(r => r.url.startsWith('http')) || [];
+          } catch (e) {
+            logger.error('google_single_search_failed', { query: variation.query });
+            results = [];
+          }
         }
       } else {
         results = await safeSearch(variation.query) || [];
@@ -351,6 +364,11 @@ export async function huntMerchants(
           isCOD: false,
         };
 
+        // Track which source types found this merchant
+        const normalKey = normalizeName(businessName);
+        if (!sourceMap.has(normalKey)) sourceMap.set(normalKey, new Set());
+        sourceMap.get(normalKey)!.add(variation.type);
+
         discoveredMerchants.push(merchantData);
 
         if (onProgress) onProgress(discoveredMerchants.length);
@@ -389,7 +407,9 @@ export async function huntMerchants(
         const merchantId = uuidv4();
         const fitScore = computeFitScore(m.platform, 0);
         const contactScore = computeContactScore(m);
-        const confidenceScore = computeConfidence(m);
+        const sourceCount = sourceMap.get(normalizeName(m.businessName))?.size || 1;
+        const sourceList = Array.from(sourceMap.get(normalizeName(m.businessName)) || []);
+        const confidenceScore = computeConfidence(m, sourceCount);
         const contactValidation = {
           status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
           sources: ['Scraper', m.platform]
@@ -398,24 +418,28 @@ export async function huntMerchants(
         db.prepare(`
           INSERT INTO merchants (
             id, business_name, normalized_name, source_platform, source_url,
-            category, subcategory, country, city, website, phone, whatsapp, 
+            category, subcategory, country, city, website, phone, whatsapp,
             email, instagram_handle, github_url, facebook_url, tiktok_handle,
-            physical_address, dul_number, confidence_score, contactability_score, 
+            twitter_handle, linkedin_url,
+            physical_address, dul_number, confidence_score, contactability_score,
             myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
             risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
-            scripts_json, evidence_json, contact_validation_json, metadata_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            scripts_json, evidence_json, contact_validation_json, metadata_json,
+            source_count, source_list
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
           merchantId, m.businessName, normalizeName(m.businessName), m.platform, m.url,
           m.category || keywords.split(' ')[0], m.subcategory || null, location, m.location || null, m.website || null,
           m.phone, m.whatsapp || m.phone, m.email, m.instagramHandle, m.githubUrl,
-          m.facebookUrl, m.tiktokHandle, m.physicalAddress,
-          m.dulNumber || null, confidenceScore, contactScore, fitScore,
+          m.facebookUrl, m.tiktokHandle, m.twitterHandle || null, m.linkedinUrl || null,
+          m.physicalAddress, m.dulNumber || null,
+          confidenceScore, contactScore, fitScore,
           m.qualityScore || 0, m.reliabilityScore || 0, m.complianceScore || 0,
           JSON.stringify(m.riskAssessment || {}), m.estimatedRevenue || 0, m.setupFee || 0,
           m.paymentGateway || 'None detected', JSON.stringify(m.scripts || {}),
-          JSON.stringify(m.evidence), JSON.stringify(contactValidation), 
-          JSON.stringify({ isCOD: m.isCOD })
+          JSON.stringify(m.evidence), JSON.stringify(contactValidation),
+          JSON.stringify({ isCOD: m.isCOD }),
+          sourceCount, JSON.stringify(sourceList)
         );
 
         const leadId = uuidv4();

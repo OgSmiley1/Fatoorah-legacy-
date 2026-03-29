@@ -77,14 +77,18 @@ export function computeContactScore(m: any): number {
   return Math.min(score, 100);
 }
 
-export function computeConfidence(m: any): number {
+export function computeConfidence(m: any, sourceCount = 1): number {
   let score = 0;
   if (m.url) score += 30;
   if (m.evidence && m.evidence.length > 0) score += 20;
-  
+
   // Bonus for multiple contact points
   const contactPoints = [m.phone, m.email, m.whatsapp, m.instagramHandle, m.facebookUrl, m.tiktokHandle].filter(Boolean).length;
   score += Math.min(contactPoints * 10, 50);
-  
+
+  // Cross-source verification bonus: same merchant found by 2+ independent sources
+  if (sourceCount >= 3) score += 30;
+  else if (sourceCount >= 2) score += 20;
+
   return Math.min(score, 100);
 }

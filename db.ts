@@ -118,7 +118,11 @@ const migrations = [
   { name: 'scripts_json', type: 'TEXT' },
   { name: 'evidence_json', type: 'TEXT' },
   { name: 'contact_validation_json', type: 'TEXT' },
-  { name: 'metadata_json', type: 'TEXT' }
+  { name: 'metadata_json', type: 'TEXT' },
+  { name: 'latitude', type: 'REAL' },
+  { name: 'longitude', type: 'REAL' },
+  { name: 'source_count', type: 'INTEGER DEFAULT 1' },
+  { name: 'source_list', type: 'TEXT' }
 ];
 
 for (const col of migrations) {

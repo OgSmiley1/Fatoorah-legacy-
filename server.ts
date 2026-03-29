@@ -182,6 +182,47 @@ async function startServer() {
     res.json(logs);
   });
 
+  // AI Chat (Gemini primary → Groq fallback)
+  app.post("/api/ai-chat", async (req, res) => {
+    const { message, history = [], systemPrompt } = req.body;
+    if (!message) return res.status(400).json({ error: "message required" });
+    try {
+      const { chat } = await import("./server/aiProviderService");
+      const prompt = systemPrompt || `You are the SMILEY WIZARD, the intelligent core of the MyFatoorah Acquisition Engine. Help sales teams find and qualify merchants in the UAE. Be concise and professional.`;
+      const result = await chat([...history, { role: "user", content: message }], prompt);
+      res.json({ response: result.text, provider: result.provider });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message, provider: "none" });
+    }
+  });
+
+  // Geocode via Nominatim (OpenStreetMap — free, no API key needed)
+  let lastGeocodeAt = 0;
+  app.get("/api/geocode", async (req, res) => {
+    const address = req.query.address as string;
+    if (!address) return res.status(400).json({ error: "address required" });
+
+    // Respect Nominatim's 1 req/sec policy
+    const now = Date.now();
+    const wait = 1100 - (now - lastGeocodeAt);
+    if (wait > 0) await new Promise(r => setTimeout(r, wait));
+    lastGeocodeAt = Date.now();
+
+    try {
+      const { default: axios } = await import("axios");
+      const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(address)}&format=json&limit=1&countrycodes=ae`;
+      const { data } = await axios.get(url, {
+        headers: { "User-Agent": "Fatoorah-MerchantFinder/1.0 (contact: admin@fatoorah.local)" },
+        timeout: 8000
+      });
+      const [hit] = data;
+      if (!hit) return res.status(404).json({ error: "Not found" });
+      res.json({ lat: parseFloat(hit.lat), lng: parseFloat(hit.lon), display_name: hit.display_name });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // --- TELEGRAM BOT (SERVER-SIDE) ---
 
   let lastUpdateId = 0;
