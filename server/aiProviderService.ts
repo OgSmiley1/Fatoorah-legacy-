@@ -32,6 +32,9 @@ const GROQ_MODEL   = "llama-3.3-70b-versatile"; // Groq (api.groq.com) — last 
 
 async function tryGemini(messages: AIMessage[], systemPrompt: string, apiKey: string): Promise<string> {
   try {
+    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10) {
+      throw new Error("Invalid or placeholder Gemini API key detected.");
+    }
     const ai = new GoogleGenAI({ apiKey });
 
     const contents = messages.map(m => ({
@@ -53,11 +56,19 @@ async function tryGemini(messages: AIMessage[], systemPrompt: string, apiKey: st
     if (!text) throw new Error("Gemini returned empty response");
     return text;
   } catch (err: any) {
-    logger.error("ai_gemini_failed", { key: apiKey.substring(0, 8) + "...", error: err.message, stack: err.stack });
+    const maskedKey = apiKey ? (apiKey.substring(0, 8) + "...") : "MISSING";
+    logger.error("ai_gemini_failed", { key: maskedKey, error: err.message });
+    
     // If 404, it might be the model name. Log it clearly.
     if (err.message?.includes('404') || err.message?.includes('not found')) {
       logger.error('gemini_model_not_found', { model: GEMINI_MODEL, error: err.message });
     }
+    
+    // If API key is invalid, we should definitely try the next provider
+    if (err.message?.includes('API key not valid') || err.message?.includes('INVALID_ARGUMENT')) {
+      logger.warn('gemini_api_key_invalid', { key: maskedKey });
+    }
+    
     throw err;
   }
 }

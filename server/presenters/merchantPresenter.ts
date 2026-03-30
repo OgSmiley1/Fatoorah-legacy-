@@ -89,6 +89,8 @@ export function toMerchantViewModelFromRow(row: any): Merchant {
   const evidence = row.evidence_json ? JSON.parse(row.evidence_json) : [];
   const contactValidation = row.contact_validation_json ? JSON.parse(row.contact_validation_json) : {};
   const metadata = row.metadata_json ? JSON.parse(row.metadata_json) : {};
+  const pricing = row.pricing_json ? JSON.parse(row.pricing_json) : null;
+  const revenue = row.revenue_json ? JSON.parse(row.revenue_json) : null;
 
   return toMerchantViewModel({
     ...row,
@@ -101,6 +103,8 @@ export function toMerchantViewModelFromRow(row: any): Merchant {
     scripts,
     evidence,
     contactValidation,
+    pricing,
+    revenue,
     isCOD: metadata.isCOD ?? row.is_cod ?? false,
     fitScore: row.myfatoorah_fit_score,
     contactScore: row.contactability_score,

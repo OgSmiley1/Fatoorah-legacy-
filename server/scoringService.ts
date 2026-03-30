@@ -104,3 +104,79 @@ export function computeConfidence(m: any, sourceCount = 1): number {
 
   return Math.min(score, 100);
 }
+
+export interface MyFatoorahOffer {
+  setupFee: number;
+  transactionRate: string;
+  settlementCycle: string;
+  offerReason: string;
+  isEligible: boolean;
+}
+
+export function calculateMyFatoorahOffer(m: any, risk: any, revenue: any): MyFatoorahOffer {
+  // 1. Risk Eligibility - Only LOW and MEDIUM risk get special offers
+  // High risk gets standard pricing or no offer
+  if (risk.category === 'HIGH') {
+    return {
+      setupFee: 1499,
+      transactionRate: '3.0% + 1.50 AED',
+      settlementCycle: 'T+5',
+      offerReason: 'Standard pricing for high-risk profile',
+      isEligible: false
+    };
+  }
+
+  let setupFee = 999;
+  let transactionRate = '2.5% + 1.00 AED';
+  let settlementCycle = 'T+2';
+  let offerReason = 'Standard digital integration';
+
+  // 2. Activity / Revenue Scaling
+  const monthlyRev = revenue?.monthly || 0;
+  if (monthlyRev > 100000) {
+    setupFee = 0;
+    transactionRate = '1.9% + 0.50 AED';
+    settlementCycle = 'T+1';
+    offerReason = 'Enterprise volume discount';
+  } else if (monthlyRev > 50000) {
+    setupFee = 299;
+    transactionRate = '2.2% + 0.75 AED';
+    settlementCycle = 'T+1';
+    offerReason = 'High-growth merchant offer';
+  } else if (monthlyRev > 20000) {
+    setupFee = 499;
+    transactionRate = '2.4% + 1.00 AED';
+    offerReason = 'Verified active merchant discount';
+  }
+
+  // 3. Category / Product Specifics
+  const category = (m.category || '').toLowerCase();
+  if (category.includes('fashion') || category.includes('clothing') || category.includes('beauty')) {
+    // High-volume retail categories get slightly better rates
+    if (setupFee > 0) setupFee -= 100;
+    offerReason += ' • Retail sector incentive';
+  } else if (category.includes('electronics') || category.includes('gadgets')) {
+    // Electronics often have lower margins, maybe faster settlement
+    settlementCycle = 'T+1';
+    offerReason += ' • Electronics sector fast-settlement';
+  }
+
+  // 4. Risk Bonus - Only LOW risk gets the absolute best perks
+  if (risk.category === 'LOW') {
+    if (setupFee > 0) setupFee = Math.round(setupFee * 0.7); // 30% discount on setup
+    offerReason += ' • Low-risk trust bonus';
+  }
+
+  // 5. COD Bonus
+  if (m.isCOD) {
+    offerReason += ' • COD conversion specialist';
+  }
+
+  return {
+    setupFee,
+    transactionRate,
+    settlementCycle,
+    offerReason,
+    isEligible: true
+  };
+}

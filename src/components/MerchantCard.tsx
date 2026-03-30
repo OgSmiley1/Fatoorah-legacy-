@@ -255,14 +255,20 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             <p className="mission-control-label mb-1 flex items-center gap-1">
               <Zap size={10} /> MyFatoorah Offer
             </p>
-            <p className="text-sm font-bold text-emerald-400">
-              {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : 
-               merchant.pricing?.setupFee !== null ? `AED ${merchant.pricing.setupFee} SETUP` : 
-               'No offer computed'}
-            </p>
-            <p className="text-[9px] text-slate-500 uppercase">
-              {merchant.pricing?.transactionRate} • {merchant.pricing?.settlementCycle}
-            </p>
+            {merchant.risk?.category !== 'HIGH' ? (
+              <>
+                <p className="text-sm font-bold text-emerald-400">
+                  {merchant.pricing?.setupFee === 0 ? 'FREE SETUP' : 
+                   merchant.pricing?.setupFee !== null ? `AED ${merchant.pricing.setupFee} SETUP` : 
+                   'No offer computed'}
+                </p>
+                <p className="text-[9px] text-slate-500 uppercase">
+                  {merchant.pricing?.transactionRate} • {merchant.pricing?.settlementCycle}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-slate-500 italic">Ineligible (High Risk)</p>
+            )}
           </div>
         </div>
 

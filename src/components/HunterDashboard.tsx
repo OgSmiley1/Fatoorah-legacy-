@@ -154,6 +154,7 @@ export const HunterDashboard: React.FC = () => {
     if (!searchKeywords) return;
     
     setLoading(true);
+    setMerchants([]); // Clear previous results to show it's working
     try {
       const searchParams = overrideKeywords 
         ? { ...params, keywords: overrideKeywords }

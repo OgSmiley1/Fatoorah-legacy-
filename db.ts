@@ -148,6 +148,8 @@ const migrations = [
   { name: 'setup_fee', type: 'REAL DEFAULT 0' },
   { name: 'payment_gateway', type: 'TEXT' },
   { name: 'scripts_json', type: 'TEXT' },
+  { name: 'pricing_json', type: 'TEXT' },
+  { name: 'revenue_json', type: 'TEXT' },
   { name: 'evidence_json', type: 'TEXT' },
   { name: 'contact_validation_json', type: 'TEXT' },
   { name: 'metadata_json', type: 'TEXT' },

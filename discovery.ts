@@ -57,7 +57,7 @@ export async function ingestMerchants(params: {
           // 1. Enrich & Score (Centralized) with a timeout to prevent hangs
           const enrichmentPromise = enrichMerchantContacts(raw);
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Enrichment timeout")), 15000)
+            setTimeout(() => reject(new Error("Enrichment timeout")), 45000)
           );
           
           const enriched = await Promise.race([enrichmentPromise, timeoutPromise]) as any;
@@ -75,7 +75,12 @@ export async function ingestMerchants(params: {
             complianceScore: 0,
             riskAssessment: { score: 0, category: 'LOW', emoji: '✅', color: 'green', factors: [] },
             revenue: { monthly: 0, annual: 0, confidence: 'LOW', basis: 'Fallback' },
-            pricing: { setupFee: 999, transactionRate: '2.5%', settlementCycle: 'T+2' },
+            pricing: { 
+              setupFee: 999, 
+              transactionRate: '2.5% + 1.00 AED', 
+              settlementCycle: 'T+2',
+              offerReason: 'Standard fallback pricing'
+            },
             evidence: [],
             contactValidation: { status: 'UNVERIFIED', sources: [] },
             scripts: { arabic: '', english: '', whatsapp: '', instagram: '' }
@@ -109,9 +114,9 @@ export async function ingestMerchants(params: {
               physical_address, dul_number, confidence_score, contactability_score, 
               myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
               risk_assessment_json, estimated_revenue, setup_fee, payment_gateway,
-              scripts_json, evidence_json, contact_validation_json, metadata_json,
+              scripts_json, pricing_json, revenue_json, evidence_json, contact_validation_json, metadata_json,
               followers, source_count, source_list
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           `).run(
             merchantId, enriched.businessName, normalizedName, enriched.platform, enriched.url,
             enriched.category, enriched.subcategory, params.location, enriched.location, enriched.website,
@@ -122,7 +127,10 @@ export async function ingestMerchants(params: {
             enriched.qualityScore || 0, enriched.reliabilityScore || 0, enriched.complianceScore || 0,
             JSON.stringify(riskAssessment), enriched.revenue?.monthly || enriched.estimatedRevenue || 0, 
             enriched.pricing?.setupFee || enriched.setupFee || 0,
-            enriched.paymentGateway || 'None detected', JSON.stringify(enriched.scripts || {}),
+            enriched.paymentGateway || 'None detected', 
+            JSON.stringify(enriched.scripts || {}),
+            JSON.stringify(enriched.pricing || {}),
+            JSON.stringify(enriched.revenue || {}),
             JSON.stringify(enriched.evidence || []),
             JSON.stringify(contactValidation),
             JSON.stringify({ isCOD: enriched.isCOD }),

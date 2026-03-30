@@ -173,7 +173,17 @@ async function startServer() {
     const { message, history = [], systemPrompt } = req.body;
     if (!message) return res.status(400).json({ error: "message required" });
     try {
-      const prompt = systemPrompt || `You are the SMILEY WIZARD, the intelligent core of the MyFatoorah Acquisition Engine. Help sales teams find and qualify merchants in the UAE. Be concise and professional.`;
+      const prompt = systemPrompt || `
+        You are the SMILEY WIZARD, the intelligent core of the MyFatoorah Acquisition Engine. 
+        Help sales teams find and qualify merchants in the UAE. 
+        Be concise, professional, and data-driven.
+        
+        When asked about merchants:
+        - Use the available database stats.
+        - If asked to find merchants, explain that the user should use the 'Discovery' tab or the /hunt command.
+        - Always verify your claims against the provided context.
+        - If you don't know something, be honest.
+      `.trim();
       const result = await chat([...history, { role: "user", content: message }], prompt);
       res.json({ response: result.text, provider: result.provider });
     } catch (error: any) {
@@ -199,7 +209,22 @@ async function startServer() {
         headers: { "User-Agent": "Fatoorah-MerchantFinder/1.0 (contact: admin@fatoorah.local)" },
         timeout: 8000
       });
-      const [hit] = data;
+      let [hit] = data;
+      
+      if (!hit) {
+        // Fallback: Try geocoding just the emirate/city if the full address fails
+        const parts = address.split(',');
+        const fallbackAddress = parts.length > 1 ? parts[parts.length - 1].trim() : "Dubai";
+        logger.info('geocoding_fallback_attempt', { original: address, fallback: fallbackAddress });
+        
+        const fallbackUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(fallbackAddress)}&format=json&limit=1&countrycodes=ae`;
+        const { data: fallbackData } = await axios.get(fallbackUrl, {
+          headers: { "User-Agent": "Fatoorah-MerchantFinder/1.0 (contact: admin@fatoorah.local)" },
+          timeout: 5000
+        });
+        hit = fallbackData[0];
+      }
+
       if (!hit) return res.status(404).json({ error: "Not found" });
       res.json({ lat: parseFloat(hit.lat), lng: parseFloat(hit.lon), display_name: hit.display_name });
     } catch (error: any) {
