@@ -27,8 +27,8 @@ async function startServer() {
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: true,
-      sameSite: 'none',
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000
     }
@@ -36,7 +36,7 @@ async function startServer() {
 
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: { origin: process.env.ALLOWED_ORIGIN || "*", methods: ["GET", "POST"] }
   });
 
   const huntRequests = new Map<string, number>();
@@ -73,7 +73,7 @@ async function startServer() {
     });
   });
 
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // --- API ROUTES ---
 

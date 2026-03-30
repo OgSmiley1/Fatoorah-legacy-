@@ -1,0 +1,42 @@
+# Dependencies — rebuilt inside Docker for correct native ABI
+node_modules/
+
+# Frontend build — rebuilt inside Docker
+dist/
+
+# Database — mounted as a named volume at runtime, never bake into image
+*.db
+*.db-wal
+*.db-shm
+
+# Secrets — supplied at runtime via env_file, never bake into image
+.env
+.env.local
+.env.production
+.env.development
+
+# Git history
+.git/
+.gitignore
+
+# Logs
+*.log
+logs/
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / CI
+coverage/
+
+# Docker itself (no need to copy into the image)
+Dockerfile
+docker-compose.yml
+.dockerignore

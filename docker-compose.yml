@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: fatoorah-wizard
+    restart: unless-stopped
+
+    # Map host port → container port.
+    # Override host port with PORT env var: PORT=8080 docker compose up
+    ports:
+      - "${PORT:-3000}:3000"
+
+    # NODE_ENV=production is enforced here regardless of what's in .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+
+    # All secrets (GEMINI_API_KEY, GROK_API_KEY, SESSION_SECRET, etc.)
+    # are loaded from .env on the host — never baked into the image
+    env_file:
+      - .env
+
+    # SQLite database persists across container restarts/rebuilds
+    volumes:
+      - wizard-db:/app/wizard.db
+
+    healthcheck:
+      # Uses Node's built-in http module — no curl/wget needed in slim image
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/api/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  # Named volume — persists across "docker compose down"
+  # Inspect with: docker volume inspect fatoorah-legacy--wizard-db
+  wizard-db:
+    driver: local
