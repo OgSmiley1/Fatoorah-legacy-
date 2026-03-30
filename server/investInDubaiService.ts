@@ -26,22 +26,31 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
 
       // Go to the directory page
       await page.goto('https://investindubai.gov.ae/en/business-directory', { 
-        waitUntil: 'networkidle',
-        timeout: 30000 
+        waitUntil: 'domcontentloaded',
+        timeout: 60000 
       });
       
-      // Wait for the search input by ID
-      await page.waitForSelector('#dul-search-input', { timeout: 15000 });
+      // Wait for the search input by ID - try multiple selectors or just wait for network idle
+      try {
+        await page.waitForSelector('#dul-search-input', { timeout: 30000 });
+      } catch (e) {
+        logger.warn('invest_in_dubai_selector_timeout_trying_anyway', { query });
+      }
       
       // Type the query
-      await page.fill('#dul-search-input', query);
-      
-      // Click the search button
-      await page.click('.dul-search__button');
+      const input = await page.$('#dul-search-input');
+      if (input) {
+        await input.fill(query);
+        await page.click('.dul-search__button');
+      } else {
+        // Fallback: try to find any search input
+        await page.keyboard.type(query);
+        await page.keyboard.press('Enter');
+      }
       
       // Wait for results to load
       try {
-        await page.waitForSelector('.dul-search-card', { timeout: 15000 });
+        await page.waitForSelector('.dul-search-card', { timeout: 30000 });
       } catch (e) {
         // Check if "No results" message is present
         const noResults = await page.isVisible('.no-results-message') || await page.isVisible('text=No results');

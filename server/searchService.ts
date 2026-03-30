@@ -323,68 +323,88 @@ async function googleSearchRaw(query: string): Promise<any[]> {
   }
 }
 
-async function playwrightDDGSearch(query: string): Promise<any[]> {
-  logger.info('executing_playwright_ddg_search', { query });
-  let browser;
-  try {
-    browser = await chromium.launch({ 
-      headless: true, 
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] 
-    });
-    const context = await browser.newContext({
-      userAgent: getRandomUserAgent(),
-      viewport: { width: 1280, height: 800 }
-    });
-    
-    const page = await context.newPage();
-    
-    // DuckDuckGo search URL
-    await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&t=h_&ia=web`, {
-      waitUntil: 'domcontentloaded',
-      timeout: 30000
-    });
-
-    // Wait for results to appear
+async function playwrightDDGSearch(query: string, retries = 1): Promise<any[]> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    logger.info('executing_playwright_ddg_search', { query, attempt });
+    let browser;
     try {
-      await page.waitForSelector('.react-results--main, article[data-testid="result"], .result__body', { timeout: 15000 });
-    } catch (e) {
-      // Check if no results found
-      const noResults = await page.isVisible('text=No results found') || await page.isVisible('.no-results');
-      if (noResults) {
-        logger.info('playwright_ddg_no_results', { query });
-        return [];
-      }
-      // If we see a challenge or something else, try to wait a bit longer
-      await page.waitForTimeout(2000);
-    }
+      browser = await chromium.launch({ 
+        headless: true, 
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'] 
+      });
+      const context = await browser.newContext({
+        userAgent: getRandomUserAgent(),
+        viewport: { width: 1280, height: 800 }
+      });
+      
+      const page = await context.newPage();
+      
+      // DuckDuckGo search URL
+      // Use 'commit' to be faster, then wait for selector
+      await page.goto(`https://duckduckgo.com/?q=${encodeURIComponent(query)}&t=h_&ia=web`, {
+        waitUntil: 'domcontentloaded',
+        timeout: 45000 // Increased timeout
+      });
 
-    const results = await page.evaluate(() => {
-      // Try multiple selectors as DDG layout can vary
-      let items = Array.from(document.querySelectorAll('article[data-testid="result"]'));
-      if (items.length === 0) {
-        items = Array.from(document.querySelectorAll('.result__body'));
+      // Wait for results to appear
+      try {
+        await page.waitForSelector('.react-results--main, article[data-testid="result"], .result__body', { timeout: 20000 });
+      } catch (e) {
+        // Check if no results found
+        const noResults = await page.isVisible('text=No results found') || await page.isVisible('.no-results');
+        if (noResults) {
+          logger.info('playwright_ddg_no_results', { query });
+          return [];
+        }
+        // If we see a challenge or something else, try to wait a bit longer
+        await page.waitForTimeout(3000);
+      }
+
+      const results = await page.evaluate(() => {
+        // Try multiple selectors as DDG layout can vary
+        let items = Array.from(document.querySelectorAll('article[data-testid="result"]'));
+        if (items.length === 0) {
+          items = Array.from(document.querySelectorAll('.result__body'));
+        }
+        if (items.length === 0) {
+          items = Array.from(document.querySelectorAll('.links_main'));
+        }
+        
+        return items.map(item => {
+          const titleEl = item.querySelector('h2 a') || item.querySelector('a[data-testid="result-title-a"]') || item.querySelector('.result__title a');
+          const snippetEl = item.querySelector('div[data-result="snippet"]') || item.querySelector('.result__snippet') || item.querySelector('.result__snippet');
+          
+          return {
+            title: titleEl?.textContent?.trim() || '',
+            url: titleEl?.getAttribute('href') || '',
+            description: snippetEl?.textContent?.trim() || ''
+          };
+        }).filter(r => r.url && r.title);
+      });
+
+      if (results.length > 0) {
+        logger.info('playwright_ddg_search_success', { query, count: results.length });
+        return results;
       }
       
-      return items.map(item => {
-        const titleEl = item.querySelector('h2 a') || item.querySelector('a[data-testid="result-title-a"]') || item.querySelector('.result__title a');
-        const snippetEl = item.querySelector('div[data-result="snippet"]') || item.querySelector('.result__snippet') || item.querySelector('.result__snippet');
-        
-        return {
-          title: titleEl?.textContent?.trim() || '',
-          url: titleEl?.getAttribute('href') || '',
-          description: snippetEl?.textContent?.trim() || ''
-        };
-      }).filter(r => r.url && r.title);
-    });
-
-    logger.info('playwright_ddg_search_success', { query, count: results.length });
-    return results;
-  } catch (error: any) {
-    logger.error('playwright_ddg_search_failed', { query, error: error.message });
-    return [];
-  } finally {
-    if (browser) await browser.close();
+      if (attempt < retries) {
+        logger.warn('playwright_ddg_no_results_retrying', { query, attempt });
+        await sleep(2000);
+        continue;
+      }
+      return [];
+    } catch (error: any) {
+      logger.error('playwright_ddg_search_failed', { query, attempt, error: error.message });
+      if (attempt < retries) {
+        await sleep(3000);
+        continue;
+      }
+      return [];
+    } finally {
+      if (browser) await browser.close();
+    }
   }
+  return [];
 }
 
 async function safeSearch(query: string, retries = 2): Promise<any[]> {

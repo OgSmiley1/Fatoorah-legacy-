@@ -32,8 +32,8 @@ const GROQ_MODEL   = "llama-3.3-70b-versatile"; // Groq (api.groq.com) — last 
 
 async function tryGemini(messages: AIMessage[], systemPrompt: string, apiKey: string): Promise<string> {
   try {
-    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10) {
-      throw new Error("Invalid or placeholder Gemini API key detected.");
+    if (!apiKey || apiKey === "YOUR_GEMINI_API_KEY" || apiKey.length < 10 || apiKey.startsWith("MY_GEMINI")) {
+      throw new Error("Invalid or placeholder Gemini API key detected. Please set a valid GEMINI_API_KEY in your settings.");
     }
     const ai = new GoogleGenAI({ apiKey });
 
