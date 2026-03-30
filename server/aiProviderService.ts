@@ -12,7 +12,7 @@
  */
 
 import { GoogleGenAI } from "@google/genai";
-import { logger } from "./logger";
+import { logger } from "./logger.ts";
 
 export interface AIMessage {
   role: "user" | "assistant";
@@ -27,30 +27,39 @@ export interface AIResponse {
 }
 
 const GEMINI_MODEL = "gemini-1.5-flash";        // stable, available on all API versions
-const GROK_MODEL   = "grok-3-fast";           // xAI Grok (api.x.ai)
+const GROK_MODEL   = "grok-4-1-fast";           // xAI Grok (api.x.ai)
 const GROQ_MODEL   = "llama-3.3-70b-versatile"; // Groq (api.groq.com) — last resort
 
 async function tryGemini(messages: AIMessage[], systemPrompt: string, apiKey: string): Promise<string> {
-  const ai = new GoogleGenAI({ apiKey });
+  try {
+    const ai = new GoogleGenAI({ apiKey });
 
-  const contents = messages.map(m => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }]
-  }));
+    const contents = messages.map(m => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.content }]
+    }));
 
-  const response = await ai.models.generateContent({
-    model: GEMINI_MODEL,
-    contents,
-    config: {
-      systemInstruction: systemPrompt,
-      maxOutputTokens: 1024,
-      temperature: 0.7
+    const response = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents,
+      config: {
+        systemInstruction: systemPrompt,
+        maxOutputTokens: 1024,
+        temperature: 0.7
+      }
+    });
+
+    const text = response.text;
+    if (!text) throw new Error("Gemini returned empty response");
+    return text;
+  } catch (err: any) {
+    logger.error("ai_gemini_failed", { key: apiKey.substring(0, 8) + "...", error: err.message, stack: err.stack });
+    // If 404, it might be the model name. Log it clearly.
+    if (err.message?.includes('404') || err.message?.includes('not found')) {
+      logger.error('gemini_model_not_found', { model: GEMINI_MODEL, error: err.message });
     }
-  });
-
-  const text = response.text;
-  if (!text) throw new Error("Gemini returned empty response");
-  return text;
+    throw err;
+  }
 }
 
 async function tryOpenAICompat(
@@ -61,35 +70,40 @@ async function tryOpenAICompat(
   model: string,
   providerName: string
 ): Promise<string> {
-  const payload = {
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      ...messages.map(m => ({ role: m.role, content: m.content }))
-    ],
-    max_tokens: 1024,
-    temperature: 0.7,
-    stream: false
-  };
+  try {
+    const payload = {
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        ...messages.map(m => ({ role: m.role, content: m.content }))
+      ],
+      max_tokens: 1024,
+      temperature: 0.7,
+      stream: false
+    };
 
-  const response = await fetch(apiUrl, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(payload)
-  });
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
 
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`${providerName} API error ${response.status}: ${err}`);
+    if (!response.ok) {
+      const err = await response.text();
+      throw new Error(`${providerName} API error ${response.status}: ${err}`);
+    }
+
+    const data: any = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) throw new Error(`${providerName} returned empty response`);
+    return text;
+  } catch (err: any) {
+    logger.error(`${providerName.toLowerCase()}_failed`, { error: err.message, stack: err.stack });
+    throw err;
   }
-
-  const data: any = await response.json();
-  const text = data.choices?.[0]?.message?.content;
-  if (!text) throw new Error(`${providerName} returned empty response`);
-  return text;
 }
 
 /**
