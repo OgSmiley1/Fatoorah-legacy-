@@ -242,11 +242,9 @@ export const WizardChat: React.FC<WizardChatProps> = ({ onSearch, onRefreshStats
                       : 'bg-gray-800/80 text-gray-100 rounded-bl-md border border-white/5'
                   )}>
                     {msg.role === 'assistant' ? (
-                      <ReactMarkdown
-                        className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-strong:text-blue-300"
-                      >
-                        {msg.content}
-                      </ReactMarkdown>
+                      <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5 prose-strong:text-blue-300">
+                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                      </div>
                     ) : (
                       <p className="leading-relaxed">{msg.content}</p>
                     )}
