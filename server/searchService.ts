@@ -390,7 +390,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         db.prepare(`
           INSERT INTO leads (id, merchant_id, run_id, status)
           VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId, 'NEW');
+        `).run(leadId, merchantId, runId);
 
         newLeadsCount++;
         finalMerchants.push({ 

@@ -91,10 +91,8 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose })
       setMessage(e.message || 'Failed to send messages');
     } finally {
       setTimeout(() => {
-        if (status !== 'idle') {
-          setStatus('idle');
-          setMessage('');
-        }
+        setStatus(prev => prev !== 'sending' ? 'idle' : prev);
+        setMessage('');
       }, 5000);
     }
   };

@@ -44,7 +44,7 @@ export const geminiService = {
     
     const ai = new GoogleGenAI({ apiKey });
     return ai.chats.create({
-      model: "gemini-3.1-pro-preview",
+      model: "gemini-2.0-flash",
       config: {
         systemInstruction: `You are the "SMILEY WIZARD", the intelligent core of the MyFatoorah Acquisition Engine.
         You act as a Multi-Engine Orchestrator, leveraging Gemini, Web Intelligence, Server-side Scraping, and the official "Invest in Dubai" Business Directory to find merchants across the ENTIRE United Arab Emirates.
@@ -103,7 +103,7 @@ export const geminiService = {
 
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           tools: [{ googleSearch: {} }],

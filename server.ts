@@ -120,8 +120,12 @@ async function startServer() {
     query += ` ORDER BY l.created_at DESC LIMIT ${parseInt(limit as string, 10) || 500} OFFSET ${parseInt(offset as string, 10) || 0}`;
 
     const leads = db.prepare(query).all(...params) as any[];
+    const safeParseJson = (str: string | null, fallback: any) => {
+      if (!str) return fallback;
+      try { return JSON.parse(str); } catch { return fallback; }
+    };
     const processedLeads = leads.map(l => {
-      const metadata = l.metadata_json ? JSON.parse(l.metadata_json) : {};
+      const metadata = safeParseJson(l.metadata_json, {});
       return {
         ...l,
         ...metadata,
@@ -141,8 +145,8 @@ async function startServer() {
         tiktokHandle: l.tiktok_handle,
         telegramHandle: l.telegram_handle,
         physicalAddress: l.physical_address,
-        contactValidation: l.contact_validation_json ? JSON.parse(l.contact_validation_json) : { status: 'UNVERIFIED', sources: [] },
-        evidence: l.evidence_json ? JSON.parse(l.evidence_json) : []
+        contactValidation: safeParseJson(l.contact_validation_json, { status: 'UNVERIFIED', sources: [] }),
+        evidence: safeParseJson(l.evidence_json, [])
       };
     });
     res.json(processedLeads);
@@ -229,13 +233,19 @@ async function startServer() {
           ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
           { role: 'user', content: message }
         ];
-        const r = await fetch('https://api.x.ai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${grokKey}` },
-          body: JSON.stringify({ model: 'grok-2-1212', messages, max_tokens: 1024 })
-        });
-        const data: any = await r.json();
-        return res.json({ response: data.choices[0].message.content, provider: 'grok' });
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 30000);
+        try {
+          const r = await fetch('https://api.x.ai/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${grokKey}` },
+            body: JSON.stringify({ model: 'grok-2-1212', messages, max_tokens: 1024 }),
+            signal: ctrl.signal
+          });
+          const data: any = await r.json();
+          const content = data?.choices?.[0]?.message?.content;
+          if (content) return res.json({ response: content, provider: 'grok' });
+        } finally { clearTimeout(t); }
       } catch (e: any) {
         console.warn('[ai-chat] Grok failed:', e.message);
       }
@@ -250,13 +260,19 @@ async function startServer() {
           ...(history || []).map((m: any) => ({ role: m.role, content: m.content })),
           { role: 'user', content: message }
         ];
-        const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
-          body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 1024 })
-        });
-        const data: any = await r.json();
-        return res.json({ response: data.choices[0].message.content, provider: 'groq' });
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 30000);
+        try {
+          const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${groqKey}` },
+            body: JSON.stringify({ model: 'llama-3.3-70b-versatile', messages, max_tokens: 1024 }),
+            signal: ctrl.signal
+          });
+          const data: any = await r.json();
+          const content = data?.choices?.[0]?.message?.content;
+          if (content) return res.json({ response: content, provider: 'groq' });
+        } finally { clearTimeout(t); }
       } catch (e: any) {
         console.warn('[ai-chat] Groq failed:', e.message);
       }
@@ -567,29 +583,37 @@ Respond as JSON: {
             try {
               await sendTelegramDocument(chatId, filePath, `🎯 Exported ${leads.length} leads (${status})`);
             } finally {
-              if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+              try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* ignore cleanup error */ }
             }
           } else if (text === '/status') {
-            const stats: any = db.prepare("SELECT COUNT(*) as count FROM merchants").get();
-            const newLeads: any = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get();
-            await sendTelegram(chatId, `📊 *WIZARD STATUS*\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}`, 'Markdown');
+            try {
+              const stats: any = db.prepare("SELECT COUNT(*) as count FROM merchants").get();
+              const newLeads: any = db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get();
+              await sendTelegram(chatId, `📊 *WIZARD STATUS*\n\nMerchants in DB: ${stats.count}\nNew Leads: ${newLeads.count}`, 'Markdown');
+            } catch (e: any) {
+              await sendTelegram(chatId, `❌ DB error: ${e.message}`);
+            }
           } else if (text === '/recent') {
-            const query = `
-              SELECT m.*, l.status as lead_status
-              FROM leads l
-              JOIN merchants m ON l.merchant_id = m.id
-              ORDER BY l.created_at DESC
-              LIMIT 5
-            `;
-            const leads = db.prepare(query).all() as any[];
-            if (leads.length === 0) {
-              await sendTelegram(chatId, "📭 No leads in database yet.");
-            } else {
-              await sendTelegram(chatId, "🕒 *RECENT LEADS:*", 'Markdown');
-              for (const m of leads) {
-                const msg = `🏢 *${m.business_name}* (${m.lead_status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
-                await sendTelegram(chatId, msg, 'Markdown');
+            try {
+              const recentQuery = `
+                SELECT m.*, l.status as lead_status
+                FROM leads l
+                JOIN merchants m ON l.merchant_id = m.id
+                ORDER BY l.created_at DESC
+                LIMIT 5
+              `;
+              const recentLeads = db.prepare(recentQuery).all() as any[];
+              if (recentLeads.length === 0) {
+                await sendTelegram(chatId, "📭 No leads in database yet.");
+              } else {
+                await sendTelegram(chatId, "🕒 *RECENT LEADS:*", 'Markdown');
+                for (const m of recentLeads) {
+                  const msg = `🏢 *${m.business_name}* (${m.lead_status})\n📂 ${m.category}\n⭐ Fit: ${m.myfatoorah_fit_score}/100`;
+                  await sendTelegram(chatId, msg, 'Markdown');
+                }
               }
+            } catch (e: any) {
+              await sendTelegram(chatId, `❌ DB error: ${e.message}`);
             }
           } else if (text === '/start') {
             await sendTelegram(chatId, "👋 Welcome to Smiley Wizard Merchant Hunter!\n\nCommands:\n/hunt <keywords> - Start discovery\n/status - View DB stats\n/export <status> - Export leads to CSV (default: NEW)\n/recent - Last 5 leads");
@@ -608,11 +632,15 @@ Respond as JSON: {
   async function sendTelegram(chatId: number, text: string, parseMode?: string) {
     const token = process.env.TELEGRAM_BOT_TOKEN;
     if (!token) return;
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text, parse_mode: parseMode })
-    });
+    try {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text, parse_mode: parseMode })
+      });
+    } catch (e: any) {
+      console.warn('[Telegram] sendMessage failed:', e.message);
+    }
   }
 
   async function sendTelegramDocument(chatId: number, filePath: string, caption: string) {
