@@ -612,10 +612,9 @@ export const HunterDashboard: React.FC = () => {
             category: 'Business Card Scan',
             physicalAddress: cardData.address || '',
           };
-          geminiService.ingestMerchants([merchant as any], 'Business Card Scan', 'UAE').then(() => {
-            refreshStats();
-            setShowCardScanner(false);
-          });
+          geminiService.ingestMerchants([merchant as any], 'Business Card Scan', 'UAE')
+            .then(() => { refreshStats(); setShowCardScanner(false); })
+            .catch(e => console.error('Failed to save card scan lead:', e));
         }}
       />
 

@@ -24,7 +24,10 @@ export const useSearchHistory = () => {
 
   const saveSearch = useCallback((search: Omit<SearchHistory, 'id' | 'date'>) => {
     const stored = localStorage.getItem(HISTORY_KEY);
-    const currentHistory: SearchHistory[] = stored ? JSON.parse(stored) : [];
+    let currentHistory: SearchHistory[] = [];
+    if (stored) {
+      try { currentHistory = JSON.parse(stored); } catch { currentHistory = []; }
+    }
     
     const newEntry: SearchHistory = {
       ...search,
