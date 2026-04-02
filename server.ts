@@ -7,6 +7,9 @@ import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
 import { computeFitScore } from "./server/scoringService";
@@ -17,13 +20,15 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
   app.use(cookieParser());
 
+  const isProd = process.env.NODE_ENV === 'production';
+
   app.use(session({
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: true,
-      sameSite: 'none',
+      secure: isProd,
+      sameSite: isProd ? 'none' : 'lax',
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000
     }
@@ -31,7 +36,7 @@ async function startServer() {
 
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
-    cors: { origin: "*", methods: ["GET", "POST"] }
+    cors: { origin: process.env.ALLOWED_ORIGIN || '*', methods: ["GET", "POST"] }
   });
 
   const huntRequests = new Map<string, number>();
@@ -66,7 +71,7 @@ async function startServer() {
     });
   });
 
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
   // --- API ROUTES ---
 
@@ -629,15 +634,16 @@ Respond as JSON: {
 
   // --- VITE / STATIC SERVING ---
 
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProd) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static("dist"));
-    app.get("*", (req, res) => res.sendFile("dist/index.html", { root: "." }));
+    const distPath = path.join(__dirname, 'dist');
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
