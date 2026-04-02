@@ -1,7 +1,9 @@
-import { Client, LocalAuth } from 'whatsapp-web.js';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { Client, LocalAuth } = require('whatsapp-web.js');
 import QRCode from 'qrcode';
 
-let waClient: Client | null = null;
+let waClient: any = null;
 let waStatus: 'disconnected' | 'qr_pending' | 'connected' = 'disconnected';
 let waQR: string | null = null;
 
