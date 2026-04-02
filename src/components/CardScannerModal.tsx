@@ -38,10 +38,18 @@ export const CardScannerModal: React.FC<CardScannerModalProps> = ({ isOpen, onCl
     setCardData(null);
     setSaved(false);
 
+    if (file.size > 10 * 1024 * 1024) {
+      setError('File is too large. Maximum size is 10MB.');
+      return;
+    }
+
     // Show preview
     const reader = new FileReader();
+    reader.onerror = () => setError('Failed to read file. Please try a different image.');
+    reader.onabort = () => setError('File reading was cancelled.');
     reader.onload = async (e) => {
       const base64 = e.target?.result as string;
+      if (!base64) { setError('Failed to read file.'); return; }
       setPreview(base64);
       await scanCard(base64);
     };

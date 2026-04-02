@@ -31,14 +31,13 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose })
   React.useEffect(() => {
     if (!isOpen) return;
 
-    whatsappService.getStatus().then(s => {
-      setWaStatus(s.status);
-      if (s.qr) setQrImage(s.qr);
-    });
+    whatsappService.getStatus()
+      .then(s => { setWaStatus(s.status); if (s.qr) setQrImage(s.qr); })
+      .catch(() => { /* status will show as disconnected by default */ });
 
-    whatsappService.getUncontacted().then(leads => {
-      setUncontactedCount(leads.length);
-    });
+    whatsappService.getUncontacted()
+      .then(leads => setUncontactedCount(leads.length))
+      .catch(() => { /* count stays 0 */ });
 
     // Subscribe to Socket.io events
     const socket = io();
@@ -91,10 +90,8 @@ export const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose })
       setMessage(e.message || 'Failed to send messages');
     } finally {
       setTimeout(() => {
-        if (status !== 'idle') {
-          setStatus('idle');
-          setMessage('');
-        }
+        setStatus(prev => prev !== 'sending' ? 'idle' : prev);
+        setMessage('');
       }, 5000);
     }
   };

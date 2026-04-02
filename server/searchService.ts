@@ -22,6 +22,7 @@ async function googleSearch(query: string): Promise<any[]> {
   try {
     const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
     const response = await axios.get(url, {
+      timeout: 4000,
       headers: {
         'User-Agent': getRandomUserAgent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -390,7 +391,7 @@ export async function huntMerchants(params: SearchParams, onProgress?: (count: n
         db.prepare(`
           INSERT INTO leads (id, merchant_id, run_id, status)
           VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId, 'NEW');
+        `).run(leadId, merchantId, runId);
 
         newLeadsCount++;
         finalMerchants.push({ 
