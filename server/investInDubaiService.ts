@@ -1,5 +1,19 @@
 import { chromium } from 'playwright';
 import { logger } from './logger.ts';
+import fs from 'fs';
+
+const SYSTEM_CHROME_PATHS = [
+  process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+  process.env.CHROME_PATH,
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/usr/bin/google-chrome',
+  '/snap/bin/chromium',
+].filter(Boolean) as string[];
+
+function findSystemChrome(): string | undefined {
+  return SYSTEM_CHROME_PATHS.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+}
 
 export async function scrapeInvestInDubai(query: string, maxResults: number = 20) {
   logger.info('invest_in_dubai_scrape_started', { query });
@@ -7,9 +21,11 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
+    const executablePath = findSystemChrome();
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
+      executablePath,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
     });
   } catch (err: any) {
     logger.error('invest_in_dubai_browser_launch_failed', { query, error: err.message });
