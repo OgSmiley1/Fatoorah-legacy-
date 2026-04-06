@@ -1,7 +1,7 @@
 import db from "./db";
 import { v4 as uuidv4 } from "uuid";
 import { checkDuplicate, normalizeName } from "./server/dedupService";
-import { computeFitScore, computeContactScore, computeConfidence } from "./server/scoringService";
+import { computeFitScore, computeContactScore, computeConfidence, computeQualityScore, computeReliabilityScore, computeComplianceScore, computeRiskAssessment } from "./server/scoringService";
 import { enrichMerchantContacts } from "./server/searchService";
 
 export interface IngestResult {
@@ -62,7 +62,10 @@ export async function ingestMerchants(params: {
       const contactScore = computeContactScore(raw);
       const fitScore = computeFitScore(raw.platform || 'website', raw.followers ?? null);
       const confidenceScore = computeConfidence(raw);
-      const risk = calculateRiskAssessment(raw);
+      const qualityScore = computeQualityScore(raw);
+      const reliabilityScore = computeReliabilityScore(raw);
+      const complianceScore = computeComplianceScore(raw);
+      const risk = computeRiskAssessment(raw);
       const scripts = generateScripts(raw);
 
       const merchantId = isDuplicate ? existingId : uuidv4();
@@ -70,6 +73,9 @@ export async function ingestMerchants(params: {
       if (!isDuplicate) {
         const metadata = {
           risk,
+          qualityScore,
+          reliabilityScore,
+          complianceScore,
           scripts,
           revenue: raw.revenue || { monthly: 0, annual: 0 },
           pricing: raw.pricing || { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
@@ -103,13 +109,16 @@ export async function ingestMerchants(params: {
         `).run(uuidv4(), merchantId, 'NEW', runId);
         
         newLeadsCount++;
-        processedMerchants.push({ 
-          ...raw, 
-          id: merchantId, 
-          status: 'NEW', 
-          contactScore, 
-          fitScore, 
+        processedMerchants.push({
+          ...raw,
+          id: merchantId,
+          status: 'NEW',
+          contactScore,
+          fitScore,
           confidenceScore,
+          qualityScore,
+          reliabilityScore,
+          complianceScore,
           risk,
           scripts,
           revenue: raw.revenue || { monthly: 0, annual: 0 },
@@ -125,11 +134,14 @@ export async function ingestMerchants(params: {
         db.prepare('INSERT INTO logs (level, event, details, run_id) VALUES (?, ?, ?, ?)')
           .run('DEBUG', 'DUPLICATE_EXCLUDED', `Merchant: ${raw.businessName}, Reason: ${duplicateReason}`, runId);
         
-        processedMerchants.push({ 
-          ...raw, 
+        processedMerchants.push({
+          ...raw,
           id: merchantId || uuidv4(), // Ensure unique ID even for duplicates
-          status: 'DUPLICATE', 
+          status: 'DUPLICATE',
           duplicateReason,
+          qualityScore,
+          reliabilityScore,
+          complianceScore,
           risk,
           scripts,
           revenue: raw.revenue || { monthly: 0, annual: 0 },
@@ -163,36 +175,6 @@ export async function ingestMerchants(params: {
   }
 }
 
-function calculateRiskAssessment(m: any) {
-  let score = 20;
-  const factors = ["New discovery"];
-  
-  if (!m.phone && !m.email) {
-    score += 40;
-    factors.push("Limited contact info");
-  }
-  
-  if (!m.website) {
-    score += 20;
-    factors.push("No official website");
-  }
-
-  let category: 'LOW' | 'MEDIUM' | 'HIGH' = 'LOW';
-  let emoji = '🛡️';
-  let color = 'emerald';
-
-  if (score > 60) {
-    category = 'HIGH';
-    emoji = '⚠️';
-    color = 'rose';
-  } else if (score > 30) {
-    category = 'MEDIUM';
-    emoji = '⚖️';
-    color = 'amber';
-  }
-
-  return { score, category, emoji, color, factors };
-}
 
 function generateScripts(m: any) {
   return {

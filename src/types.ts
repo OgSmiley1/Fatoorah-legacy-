@@ -123,6 +123,13 @@ export interface Merchant {
     whatsapp: string;
     instagram: string;
   };
+  roi?: {
+    feeSavings: number;
+    bnplUplift: number;
+    cashFlowGain: number;
+    totalMonthlyGain: number;
+    annualImpact: number;
+  };
   status?: string;
   duplicateReason?: string;
 }
