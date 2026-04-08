@@ -8,11 +8,48 @@ import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
+
+// SQLite-backed session store — no memory leaks, survives restarts
+class SqliteStore extends session.Store {
+  private cleanup: ReturnType<typeof setInterval>;
+  constructor() {
+    super();
+    // Purge expired sessions every 15 minutes
+    this.cleanup = setInterval(() => {
+      try { db.prepare('DELETE FROM sessions WHERE expired < ?').run(Date.now()); } catch {}
+    }, 15 * 60 * 1000);
+    if (this.cleanup.unref) this.cleanup.unref();
+  }
+  get(sid: string, cb: (err: any, session?: session.SessionData | null) => void) {
+    try {
+      const row = db.prepare('SELECT sess, expired FROM sessions WHERE sid = ?').get(sid) as any;
+      if (!row || row.expired < Date.now()) return cb(null, null);
+      cb(null, JSON.parse(row.sess));
+    } catch (e) { cb(e); }
+  }
+  set(sid: string, sess: session.SessionData, cb?: (err?: any) => void) {
+    try {
+      const maxAge = (sess.cookie?.maxAge ?? 86400) * 1000;
+      const expired = Date.now() + maxAge;
+      db.prepare('INSERT OR REPLACE INTO sessions (sid, sess, expired) VALUES (?, ?, ?)')
+        .run(sid, JSON.stringify(sess), expired);
+      cb?.();
+    } catch (e) { cb?.(e); }
+  }
+  destroy(sid: string, cb?: (err?: any) => void) {
+    try { db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid); cb?.(); }
+    catch (e) { cb?.(e); }
+  }
+  touch(sid: string, sess: session.SessionData, cb?: (err?: any) => void) {
+    this.set(sid, sess, cb);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -22,6 +59,7 @@ async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
   app.use(session({
+    store: new SqliteStore(),
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
     saveUninitialized: false,
