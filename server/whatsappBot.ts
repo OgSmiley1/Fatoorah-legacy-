@@ -1,4 +1,5 @@
 import { createRequire } from 'module';
+import { execSync } from 'child_process';
 const require = createRequire(import.meta.url);
 const { Client, LocalAuth } = require('whatsapp-web.js');
 import QRCode from 'qrcode';
@@ -25,22 +26,31 @@ export function initWhatsAppBot(
   huntMerchants: Function,
   sessionPath: string
 ) {
-  // Find Chrome executable — playwright ships its own Chromium
-  const possibleChromePaths = [
-    process.env.CHROME_PATH,
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/ms-playwright/chromium-1179/chrome-linux/chrome',
-    '/root/.cache/ms-playwright/chromium-1179/chrome-linux/chrome',
-    '/root/.cache/ms-playwright/chromium-1112/chrome-linux/chrome',
-  ].filter(Boolean) as string[];
-
+  // Find Chrome executable — try dynamic PATH lookup first, then known paths
   let executablePath: string | undefined;
   try {
-    const fs = require('fs');
-    executablePath = possibleChromePaths.find(p => fs.existsSync(p));
-  } catch { /* ignore */ }
+    // which chromium finds nix-installed binary in PATH (Railway/Nixpacks)
+    const found = execSync('which chromium || which google-chrome || which chromium-browser', {
+      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    }).trim().split('\n')[0];
+    if (found && require('fs').existsSync(found)) executablePath = found;
+  } catch { /* not in PATH, fall through to static list */ }
+
+  if (!executablePath) {
+    const staticPaths = [
+      process.env.CHROME_PATH,
+      process.env.PUPPETEER_EXECUTABLE_PATH,
+      '/usr/bin/google-chrome',
+      '/usr/bin/chromium',
+      '/root/.cache/ms-playwright/chromium-1179/chrome-linux/chrome',
+      '/root/.cache/ms-playwright/chromium-1112/chrome-linux/chrome',
+      '/ms-playwright/chromium-1179/chrome-linux/chrome',
+    ].filter(Boolean) as string[];
+    try {
+      executablePath = staticPaths.find(p => require('fs').existsSync(p));
+    } catch { /* ignore */ }
+  }
+  console.log('[WhatsApp] Chrome path:', executablePath || 'auto-detect by puppeteer');
 
   try {
     waClient = new Client({

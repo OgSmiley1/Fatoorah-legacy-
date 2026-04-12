@@ -119,6 +119,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_merchants_email ON merchants(email);
   CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
   CREATE INDEX IF NOT EXISTS idx_leads_merchant_id ON leads(merchant_id);
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    sid TEXT PRIMARY KEY,
+    sess TEXT NOT NULL,
+    expired INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_expired ON sessions(expired);
 `);
 
 // Migration: Add missing columns if they don't exist

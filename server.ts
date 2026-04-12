@@ -2,17 +2,53 @@ import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { createServer as createViteServer } from "vite";
 import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { execSync } from "child_process";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
+
+// SQLite-backed session store — no memory leaks, survives restarts
+class SqliteStore extends session.Store {
+  private cleanup: ReturnType<typeof setInterval>;
+  constructor() {
+    super();
+    // Purge expired sessions every 15 minutes
+    this.cleanup = setInterval(() => {
+      try { db.prepare('DELETE FROM sessions WHERE expired < ?').run(Date.now()); } catch {}
+    }, 15 * 60 * 1000);
+    if (this.cleanup.unref) this.cleanup.unref();
+  }
+  get(sid: string, cb: (err: any, session?: session.SessionData | null) => void) {
+    try {
+      const row = db.prepare('SELECT sess, expired FROM sessions WHERE sid = ?').get(sid) as any;
+      if (!row || row.expired < Date.now()) return cb(null, null);
+      cb(null, JSON.parse(row.sess));
+    } catch (e) { cb(e); }
+  }
+  set(sid: string, sess: session.SessionData, cb?: (err?: any) => void) {
+    try {
+      const maxAge = (sess.cookie?.maxAge ?? 86400) * 1000;
+      const expired = Date.now() + maxAge;
+      db.prepare('INSERT OR REPLACE INTO sessions (sid, sess, expired) VALUES (?, ?, ?)')
+        .run(sid, JSON.stringify(sess), expired);
+      cb?.();
+    } catch (e) { cb?.(e); }
+  }
+  destroy(sid: string, cb?: (err?: any) => void) {
+    try { db.prepare('DELETE FROM sessions WHERE sid = ?').run(sid); cb?.(); }
+    catch (e) { cb?.(e); }
+  }
+  touch(sid: string, sess: session.SessionData, cb?: (err?: any) => void) {
+    this.set(sid, sess, cb);
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -22,6 +58,7 @@ async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
 
   app.use(session({
+    store: new SqliteStore(),
     secret: process.env.SESSION_SECRET || 'smiley-wizard-secret',
     resave: false,
     saveUninitialized: false,
@@ -45,6 +82,7 @@ async function startServer() {
 
     socket.on('hunt-finished', async (data: any) => {
       const { merchants, query } = data;
+      if (!Array.isArray(merchants)) return;
       const chatId = huntRequests.get(query);
       if (chatId) {
         const newLeads = merchants.filter((m: any) => m.status === 'NEW');
@@ -54,13 +92,13 @@ async function startServer() {
           await sendTelegram(chatId, `🎯 FOUND ${newLeads.length} NEW LEADS FOR "${query}":`);
           for (const m of newLeads) {
             const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
+🏢 *${m.businessName || 'Unknown Business'}*
+📂 Category: ${m.category || 'N/A'}
 📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${m.fitScore}/100
+⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
+🔗 ${m.url || 'No URL'}
             `.trim();
             await sendTelegram(chatId, msg, 'Markdown');
           }
@@ -74,7 +112,53 @@ async function startServer() {
 
   // --- API ROUTES ---
 
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", (req, res) => res.json({ status: "ok", uptime: process.uptime() }));
+
+  // MyFatoorah webhook receiver — idempotent upsert into existing merchants table
+  app.post("/api/webhooks/myfatoorah", express.raw({ type: '*/*' }), async (req: any, res: any) => {
+    try {
+      const secret = process.env.WEBHOOK_SECRET || '';
+      const sig = req.headers['x-myfatoorah-signature'] as string | undefined;
+      if (secret && sig) {
+        const { createHmac, timingSafeEqual } = await import('crypto');
+        const hmac = createHmac('sha256', secret).update(req.body as Buffer).digest('hex');
+        try {
+          if (!timingSafeEqual(Buffer.from(hmac), Buffer.from(sig))) {
+            return res.status(401).json({ ok: false, reason: 'invalid signature' });
+          }
+        } catch {
+          return res.status(401).json({ ok: false, reason: 'invalid signature' });
+        }
+      }
+      const payload = JSON.parse((req.body as Buffer).toString('utf8'));
+      const m = payload.merchant || payload.data || payload;
+      const name = m.name || m.merchantName || '';
+      const phone = m.phone || m.contactPhone || '';
+      if (!name) return res.status(400).json({ ok: false, reason: 'missing merchant name' });
+
+      const { normalizeName, canonicalKey, canonicalIdFromKey } = await import('./src/lib/normalize.js');
+      const { v4: uuidv4 } = await import('uuid');
+      const canonicalId = canonicalIdFromKey(canonicalKey(name, m.address || '', phone));
+      const normalizedName = normalizeName(name);
+      const now = new Date().toISOString();
+
+      // Upsert into existing merchants table
+      const existing = db.prepare('SELECT id FROM merchants WHERE normalized_name = ?').get(normalizedName) as any;
+      if (existing) {
+        db.prepare('UPDATE merchants SET phone = COALESCE(phone, ?), email = COALESCE(email, ?), website = COALESCE(website, ?), metadata_json = ?, last_validated = ? WHERE id = ?')
+          .run(phone || null, m.email || null, m.website || null, JSON.stringify({ webhookSource: 'myfatoorah', canonicalId, receivedAt: now }), now, existing.id);
+      } else {
+        const id = uuidv4();
+        db.prepare(`INSERT INTO merchants (id, business_name, normalized_name, source_platform, phone, email, website, metadata_json, last_validated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, name, normalizedName, 'myfatoorah_webhook', phone || null, m.email || null, m.website || null, JSON.stringify({ webhookSource: 'myfatoorah', canonicalId, receivedAt: now }), now);
+        db.prepare('INSERT INTO leads (id, merchant_id, status) VALUES (?, ?, ?)').run(uuidv4(), id, 'NEW');
+      }
+      return res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[webhook] myfatoorah error:', err.message);
+      return res.status(500).json({ ok: false });
+    }
+  });
 
   // Discovery Search
   app.post("/api/search", async (req, res) => {
@@ -524,13 +608,13 @@ Respond as JSON: {
                 await sendTelegram(chatId, `🎯 FOUND ${result.newLeadsCount} NEW LEADS FOR "${query}":`);
                 for (const m of result.merchants) {
                   const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
+🏢 *${m.businessName || 'Unknown Business'}*
+📂 Category: ${m.category || 'N/A'}
 📱 IG: @${m.instagramHandle || 'N/A'}
 ⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
+🔗 ${m.url || 'No URL'}
                   `.trim();
                   await sendTelegram(chatId, msg, 'Markdown');
                 }
@@ -664,12 +748,25 @@ Respond as JSON: {
   pollTelegram();
 
   // --- WHATSAPP BOT ---
-  const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
-  initWhatsAppBot(io, db, huntMerchants, waSessionPath);
+  // In production, WhatsApp requires Chromium — opt-in via ENABLE_WHATSAPP=true
+  // In development, enabled by default unless ENABLE_WHATSAPP=false
+  const enableWhatsApp = isProd
+    ? process.env.ENABLE_WHATSAPP === 'true'
+    : process.env.ENABLE_WHATSAPP !== 'false';
+
+  if (enableWhatsApp) {
+    const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
+    initWhatsAppBot(io, db, huntMerchants, waSessionPath);
+  } else {
+    console.log('[WhatsApp] Disabled (set ENABLE_WHATSAPP=true to enable)');
+  }
 
   // --- VITE / STATIC SERVING ---
+  // Dynamic import keeps Vite out of the production bundle entirely —
+  // prevents ERR_INVALID_URL_SCHEME from Vite's ESM path resolution
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",

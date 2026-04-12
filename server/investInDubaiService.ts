@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import { logger } from './logger.ts';
 import fs from 'fs';
+import { execSync } from 'child_process';
 
 const SYSTEM_CHROME_PATHS = [
   process.env.PLAYWRIGHT_EXECUTABLE_PATH,
@@ -12,6 +13,13 @@ const SYSTEM_CHROME_PATHS = [
 ].filter(Boolean) as string[];
 
 function findSystemChrome(): string | undefined {
+  // Try PATH lookup first (nix-installed chromium on Railway)
+  try {
+    const found = execSync('which chromium || which google-chrome || which chromium-browser', {
+      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
+    }).trim().split('\n')[0];
+    if (found && fs.existsSync(found)) return found;
+  } catch { /* ignore */ }
   return SYSTEM_CHROME_PATHS.find(p => { try { return fs.existsSync(p); } catch { return false; } });
 }
 
