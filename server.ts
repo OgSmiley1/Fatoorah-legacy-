@@ -748,34 +748,35 @@ Respond as JSON: {
   pollTelegram();
 
   // --- WHATSAPP BOT ---
-  // In production, WhatsApp requires Chromium — opt-in via ENABLE_WHATSAPP=true
-  // In development, enabled by default unless ENABLE_WHATSAPP=false
-  const enableWhatsApp = isProd
-    ? process.env.ENABLE_WHATSAPP === 'true'
-    : process.env.ENABLE_WHATSAPP !== 'false';
-
-  if (enableWhatsApp) {
+  // Requires ENABLE_WHATSAPP=true to start (Chromium must be available)
+  if (process.env.ENABLE_WHATSAPP === 'true') {
     const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
     initWhatsAppBot(io, db, huntMerchants, waSessionPath);
   } else {
-    console.log('[WhatsApp] Disabled (set ENABLE_WHATSAPP=true to enable)');
+    console.log('[WhatsApp] Disabled. Set ENABLE_WHATSAPP=true to enable.');
   }
 
   // --- VITE / STATIC SERVING ---
-  // Dynamic import keeps Vite out of the production bundle entirely —
-  // prevents ERR_INVALID_URL_SCHEME from Vite's ESM path resolution
+  // Check dist/index.html — if it exists (Railway always builds first) serve static.
+  // Only load Vite dev server if no built assets exist (local dev without build).
+  // This avoids ERR_INVALID_URL_SCHEME from tsx+Vite ESM interop in production.
+  const distPath = path.join(__dirname, 'dist');
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
 
-  if (!isProd) {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(__dirname, 'dist');
+  if (hasDist) {
     app.use(express.static(distPath));
-    app.get("*", (req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    app.get("*", (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
+    console.log('[server] Serving built assets from dist/');
+  } else {
+    try {
+      const { createServer: createViteServer } = await import("vite");
+      const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
+      app.use(vite.middlewares);
+      console.log('[server] Vite dev server active');
+    } catch (e: any) {
+      console.error('[server] Vite failed to load:', e.message);
+      app.get("*", (_req, res) => res.status(503).send('Run npm run build first'));
+    }
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {

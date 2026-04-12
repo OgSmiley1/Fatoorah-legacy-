@@ -26,19 +26,32 @@ export function initWhatsAppBot(
   huntMerchants: Function,
   sessionPath: string
 ) {
-  // Find Chrome executable — try dynamic PATH lookup first, then known paths
-  let executablePath: string | undefined;
-  try {
-    // which chromium finds nix-installed binary in PATH (Railway/Nixpacks)
-    const found = execSync('which chromium || which google-chrome || which chromium-browser', {
-      encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']
-    }).trim().split('\n')[0];
-    if (found && require('fs').existsSync(found)) executablePath = found;
-  } catch { /* not in PATH, fall through to static list */ }
+  // Find Chrome executable — skip snap stubs, find real binary
+  function isRealChrome(p: string): boolean {
+    try {
+      const fs = require('fs');
+      if (!fs.existsSync(p)) return false;
+      // Read first 100 bytes — snap stubs are shell scripts starting with #!/bin/sh
+      const buf = Buffer.alloc(100);
+      const fd = fs.openSync(p, 'r');
+      fs.readSync(fd, buf, 0, 100, 0);
+      fs.closeSync(fd);
+      const head = buf.toString('utf8', 0, 10);
+      // Real ELF binaries start with \x7fELF; shell scripts start with #!
+      return head.startsWith('\x7fELF');
+    } catch { return false; }
+  }
 
+  let executablePath: string | undefined;
+
+  // 1. Check env var override first
+  if (process.env.CHROME_PATH && isRealChrome(process.env.CHROME_PATH)) {
+    executablePath = process.env.CHROME_PATH;
+  }
+
+  // 2. Try static known paths for real Chrome binaries
   if (!executablePath) {
     const staticPaths = [
-      process.env.CHROME_PATH,
       process.env.PUPPETEER_EXECUTABLE_PATH,
       '/usr/bin/google-chrome',
       '/usr/bin/chromium',
@@ -46,11 +59,21 @@ export function initWhatsAppBot(
       '/root/.cache/ms-playwright/chromium-1112/chrome-linux/chrome',
       '/ms-playwright/chromium-1179/chrome-linux/chrome',
     ].filter(Boolean) as string[];
+    executablePath = staticPaths.find(isRealChrome);
+  }
+
+  // 3. Try PATH lookup — but verify it's a real binary, not a snap stub
+  if (!executablePath) {
     try {
-      executablePath = staticPaths.find(p => require('fs').existsSync(p));
+      const candidates = execSync(
+        'which chromium 2>/dev/null; which google-chrome 2>/dev/null; which chromium-browser 2>/dev/null',
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim().split('\n').filter(Boolean);
+      executablePath = candidates.find(isRealChrome);
     } catch { /* ignore */ }
   }
-  console.log('[WhatsApp] Chrome path:', executablePath || 'auto-detect by puppeteer');
+
+  console.log('[WhatsApp] Chrome path:', executablePath || 'puppeteer auto-detect');
 
   try {
     waClient = new Client({
