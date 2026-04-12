@@ -83,6 +83,7 @@ async function startServer() {
 
     socket.on('hunt-finished', async (data: any) => {
       const { merchants, query } = data;
+      if (!Array.isArray(merchants)) return;
       const chatId = huntRequests.get(query);
       if (chatId) {
         const newLeads = merchants.filter((m: any) => m.status === 'NEW');
@@ -92,13 +93,13 @@ async function startServer() {
           await sendTelegram(chatId, `🎯 FOUND ${newLeads.length} NEW LEADS FOR "${query}":`);
           for (const m of newLeads) {
             const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
+🏢 *${m.businessName || 'Unknown Business'}*
+📂 Category: ${m.category || 'N/A'}
 📱 IG: @${m.instagramHandle || 'N/A'}
-⭐ Fit Score: ${m.fitScore}/100
+⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
+🔗 ${m.url || 'No URL'}
             `.trim();
             await sendTelegram(chatId, msg, 'Markdown');
           }
@@ -562,13 +563,13 @@ Respond as JSON: {
                 await sendTelegram(chatId, `🎯 FOUND ${result.newLeadsCount} NEW LEADS FOR "${query}":`);
                 for (const m of result.merchants) {
                   const msg = `
-🏢 *${m.businessName}*
-📂 Category: ${m.category}
+🏢 *${m.businessName || 'Unknown Business'}*
+📂 Category: ${m.category || 'N/A'}
 📱 IG: @${m.instagramHandle || 'N/A'}
 ⭐ Fit Score: ${m.fitScore || 0}/100
 📞 Phone: ${m.phone || 'N/A'}
 💬 WhatsApp: ${m.whatsapp || 'N/A'}
-🔗 [View Source](${m.url})
+🔗 ${m.url || 'No URL'}
                   `.trim();
                   await sendTelegram(chatId, msg, 'Markdown');
                 }
