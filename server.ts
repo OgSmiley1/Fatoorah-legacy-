@@ -113,7 +113,53 @@ async function startServer() {
 
   // --- API ROUTES ---
 
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", (req, res) => res.json({ status: "ok", uptime: process.uptime() }));
+
+  // MyFatoorah webhook receiver — idempotent upsert into existing merchants table
+  app.post("/api/webhooks/myfatoorah", express.raw({ type: '*/*' }), async (req: any, res: any) => {
+    try {
+      const secret = process.env.WEBHOOK_SECRET || '';
+      const sig = req.headers['x-myfatoorah-signature'] as string | undefined;
+      if (secret && sig) {
+        const { createHmac, timingSafeEqual } = await import('crypto');
+        const hmac = createHmac('sha256', secret).update(req.body as Buffer).digest('hex');
+        try {
+          if (!timingSafeEqual(Buffer.from(hmac), Buffer.from(sig))) {
+            return res.status(401).json({ ok: false, reason: 'invalid signature' });
+          }
+        } catch {
+          return res.status(401).json({ ok: false, reason: 'invalid signature' });
+        }
+      }
+      const payload = JSON.parse((req.body as Buffer).toString('utf8'));
+      const m = payload.merchant || payload.data || payload;
+      const name = m.name || m.merchantName || '';
+      const phone = m.phone || m.contactPhone || '';
+      if (!name) return res.status(400).json({ ok: false, reason: 'missing merchant name' });
+
+      const { normalizeName, canonicalKey, canonicalIdFromKey } = await import('./src/lib/normalize.js');
+      const { v4: uuidv4 } = await import('uuid');
+      const canonicalId = canonicalIdFromKey(canonicalKey(name, m.address || '', phone));
+      const normalizedName = normalizeName(name);
+      const now = new Date().toISOString();
+
+      // Upsert into existing merchants table
+      const existing = db.prepare('SELECT id FROM merchants WHERE normalized_name = ?').get(normalizedName) as any;
+      if (existing) {
+        db.prepare('UPDATE merchants SET phone = COALESCE(phone, ?), email = COALESCE(email, ?), website = COALESCE(website, ?), metadata_json = ?, last_validated = ? WHERE id = ?')
+          .run(phone || null, m.email || null, m.website || null, JSON.stringify({ webhookSource: 'myfatoorah', canonicalId, receivedAt: now }), now, existing.id);
+      } else {
+        const id = uuidv4();
+        db.prepare(`INSERT INTO merchants (id, business_name, normalized_name, source_platform, phone, email, website, metadata_json, last_validated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, name, normalizedName, 'myfatoorah_webhook', phone || null, m.email || null, m.website || null, JSON.stringify({ webhookSource: 'myfatoorah', canonicalId, receivedAt: now }), now);
+        db.prepare('INSERT INTO leads (id, merchant_id, status) VALUES (?, ?, ?)').run(uuidv4(), id, 'NEW');
+      }
+      return res.json({ ok: true });
+    } catch (err: any) {
+      console.error('[webhook] myfatoorah error:', err.message);
+      return res.status(500).json({ ok: false });
+    }
+  });
 
   // Discovery Search
   app.post("/api/search", async (req, res) => {
