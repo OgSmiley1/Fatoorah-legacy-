@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from "express";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { createServer as createViteServer } from "vite";
 import session from "express-session";
 import cookieParser from "cookie-parser";
 import fs from "fs";
@@ -749,12 +748,25 @@ Respond as JSON: {
   pollTelegram();
 
   // --- WHATSAPP BOT ---
-  const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
-  initWhatsAppBot(io, db, huntMerchants, waSessionPath);
+  // In production, WhatsApp requires Chromium — opt-in via ENABLE_WHATSAPP=true
+  // In development, enabled by default unless ENABLE_WHATSAPP=false
+  const enableWhatsApp = isProd
+    ? process.env.ENABLE_WHATSAPP === 'true'
+    : process.env.ENABLE_WHATSAPP !== 'false';
+
+  if (enableWhatsApp) {
+    const waSessionPath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_session');
+    initWhatsAppBot(io, db, huntMerchants, waSessionPath);
+  } else {
+    console.log('[WhatsApp] Disabled (set ENABLE_WHATSAPP=true to enable)');
+  }
 
   // --- VITE / STATIC SERVING ---
+  // Dynamic import keeps Vite out of the production bundle entirely —
+  // prevents ERR_INVALID_URL_SCHEME from Vite's ESM path resolution
 
   if (!isProd) {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
