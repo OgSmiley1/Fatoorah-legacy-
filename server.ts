@@ -768,15 +768,11 @@ Respond as JSON: {
     app.get("*", (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
     console.log('[server] Serving built assets from dist/');
   } else {
-    try {
-      const { createServer: createViteServer } = await import("vite");
-      const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
-      app.use(vite.middlewares);
-      console.log('[server] Vite dev server active');
-    } catch (e: any) {
-      console.error('[server] Vite failed to load:', e.message);
-      app.get("*", (_req, res) => res.status(503).send('Run npm run build first'));
-    }
+    // No built assets — tell user to build (never load Vite at runtime)
+    app.get("*", (_req, res) => res.status(503).send(
+      '<h1>App not built</h1><p>Run: <code>npm run build</code></p>'
+    ));
+    console.warn('[server] dist/ not found — run npm run build');
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
