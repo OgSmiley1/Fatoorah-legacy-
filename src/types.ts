@@ -85,6 +85,8 @@ export interface Merchant {
   whatsapp?: string;
   email?: string;
   isCOD: boolean;
+  hasGateway?: boolean;
+  mfReady?: boolean;
   paymentGateway?: string;
   fitScore: number | null;
   contactScore: number | null;
@@ -142,6 +144,7 @@ export interface SearchParams {
   businessAge?: '<1y' | '1-3y' | '>3y' | 'unknown';
   riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | 'ALL';
   minFollowers?: number;
+  onlyQualified?: boolean;
   platforms?: {
     instagram: boolean;
     facebook: boolean;

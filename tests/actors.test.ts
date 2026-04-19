@@ -2,7 +2,7 @@
 // Pure, no network, no DB.
 import { extractJsonLd, extractMeta } from '../server/actors/jsonLdExtractor';
 import { parseNominatim } from '../server/actors/nominatimActor';
-import { parseInstagramHtml } from '../server/actors/instagramActor';
+import { parseInstagramHtml, parseInstagramWebProfileJson } from '../server/actors/instagramActor';
 
 // ---------- JSON-LD ----------
 
@@ -239,5 +239,69 @@ describe('parseInstagramHtml', () => {
 
   test('returns null when meta tags missing', () => {
     expect(parseInstagramHtml('x', '<html><body>empty</body></html>')).toBeNull();
+  });
+
+  test('pulls raw follower count from inlined edge_followed_by JSON (overrides og:description)', () => {
+    const html = `
+      <meta property="og:title" content="Big Shop (@big_shop)" />
+      <meta property="og:description" content="12.3K Followers, 450 Following, 200 Posts - @big_shop on Instagram" />
+      <script>"edge_followed_by":{"count":12456}</script>
+      <script>"edge_follow":{"count":321}</script>
+      <script>"edge_owner_to_timeline_media":{"count":199,"page_info":{}}</script>
+    `;
+    const p = parseInstagramHtml('big_shop', html);
+    expect(p!.followers).toBe(12456);
+    expect(p!.following).toBe(321);
+    expect(p!.posts).toBe(199);
+  });
+
+  test('handles lowercase "followers" and bullet separators', () => {
+    const html = `
+      <meta property="og:title" content="Lower (@lower)" />
+      <meta property="og:description" content="7,895 followers · 543 following · 234 posts — @lower on Instagram" />
+    `;
+    const p = parseInstagramHtml('lower', html);
+    expect(p!.followers).toBe(7895);
+    expect(p!.following).toBe(543);
+    expect(p!.posts).toBe(234);
+  });
+});
+
+// ---------- Instagram web_profile_info JSON parser ----------
+
+describe('parseInstagramWebProfileJson', () => {
+  test('pulls counts + bio + external_url from the API response shape', () => {
+    const raw = {
+      data: {
+        user: {
+          full_name: 'Luxury Abaya DXB',
+          biography: 'Handmade abayas — order on WhatsApp +971 50 123 4567',
+          edge_followed_by: { count: 12456 },
+          edge_follow: { count: 321 },
+          edge_owner_to_timeline_media: { count: 199 },
+          external_url: 'https://luxury-abaya.ae',
+          profile_pic_url_hd: 'https://cdn.instagram.com/big.jpg',
+          category_name: 'Clothing (Brand)',
+          is_verified: true,
+          is_business_account: true,
+        },
+      },
+    };
+    const p = parseInstagramWebProfileJson('luxury_abaya_dxb', raw);
+    expect(p).not.toBeNull();
+    expect(p!.followers).toBe(12456);
+    expect(p!.following).toBe(321);
+    expect(p!.posts).toBe(199);
+    expect(p!.externalUrl).toBe('https://luxury-abaya.ae');
+    expect(p!.category).toBe('Clothing (Brand)');
+    expect(p!.isVerified).toBe(true);
+    expect(p!.isBusinessAccount).toBe(true);
+    expect(p!.bio).toMatch(/WhatsApp/);
+  });
+
+  test('returns null when data.user is missing', () => {
+    expect(parseInstagramWebProfileJson('x', {})).toBeNull();
+    expect(parseInstagramWebProfileJson('x', { data: {} })).toBeNull();
+    expect(parseInstagramWebProfileJson('x', null)).toBeNull();
   });
 });

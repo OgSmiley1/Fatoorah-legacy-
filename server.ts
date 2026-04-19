@@ -162,11 +162,11 @@ async function startServer() {
 
   // Discovery Search
   app.post("/api/search", async (req, res) => {
-    const { keywords, location, maxResults } = req.body;
+    const { keywords, location, maxResults, onlyQualified } = req.body;
     try {
       io.emit('hunt-started', { query: keywords });
       const result = await huntMerchants(
-        { keywords, location, maxResults },
+        { keywords, location, maxResults, onlyQualified },
         (count: number, stage?: string) =>
           io.emit('hunt-progress', { query: keywords, count, stage: stage || 'searching' })
       );

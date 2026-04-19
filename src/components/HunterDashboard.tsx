@@ -39,6 +39,7 @@ export const HunterDashboard: React.FC = () => {
       website: true,
     },
     maxResults: 15,
+    onlyQualified: true,
   });
 
   const [subInput, setSubInput] = React.useState('');
@@ -363,6 +364,16 @@ export const HunterDashboard: React.FC = () => {
                     />
                   </div>
                 </div>
+
+                <label className="flex items-center gap-2 text-[11px] font-bold text-slate-300 uppercase cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={params.onlyQualified ?? true}
+                    onChange={e => setParams({ ...params, onlyQualified: e.target.checked })}
+                    className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500/50"
+                  />
+                  <span>MyFatoorah-ready only <span className="text-slate-500 font-normal normal-case">(drops merchants with Stripe/Tap/PayTabs)</span></span>
+                </label>
               </div>
             </div>
 

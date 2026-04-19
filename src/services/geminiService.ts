@@ -13,10 +13,11 @@ export const geminiService = {
       const response = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        body: JSON.stringify({
           keywords: params.keywords,
           location: params.location,
-          maxResults: params.maxResults
+          maxResults: params.maxResults,
+          onlyQualified: params.onlyQualified ?? true,
         })
       });
 
