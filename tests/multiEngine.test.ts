@@ -14,6 +14,7 @@ import {
   normalizeHandle,
   normalizeEmail,
   normalizeDomain,
+  isInstitutionalLead,
   type RawLead,
 } from '../server/verificationService';
 
@@ -202,6 +203,14 @@ describe('normalizers', () => {
     expect(normalizeHandle('reel')).toBeNull();
   });
 
+  test('normalizeHandle rejects government / institutional handles', () => {
+    expect(normalizeHandle('uaemgov')).toBeNull();
+    expect(normalizeHandle('dxb_police')).toBeNull();
+    expect(normalizeHandle('ministry_of_health')).toBeNull();
+    expect(normalizeHandle('dnrd_official')).toBeNull();
+    expect(normalizeHandle('luxury_boutique_dxb')).toBe('luxury_boutique_dxb');
+  });
+
   test('normalizeEmail lowercases and validates', () => {
     expect(normalizeEmail('Hello@Shop.AE')).toBe('hello@shop.ae');
     expect(normalizeEmail('mailto:info@shop.ae')).toBe('info@shop.ae');
@@ -211,6 +220,27 @@ describe('normalizers', () => {
   test('normalizeDomain strips www and protocol', () => {
     expect(normalizeDomain('https://www.shop.ae/path')).toBe('shop.ae');
     expect(normalizeDomain('shop.ae')).toBe('shop.ae');
+  });
+});
+
+// ---------- isInstitutionalLead ----------
+
+describe('isInstitutionalLead', () => {
+  test('flags gov email domains', () => {
+    expect(isInstitutionalLead({ email: 'info@dnrd.ae' })).toBe(true);
+    expect(isInstitutionalLead({ email: 'amer@mohre.gov.ae' })).toBe(true);
+    expect(isInstitutionalLead({ email: 'info@luxury-shop.ae' })).toBe(false);
+  });
+
+  test('flags institutional business names', () => {
+    expect(isInstitutionalLead({ businessName: 'Ministry of Economy' })).toBe(true);
+    expect(isInstitutionalLead({ businessName: 'Dubai Municipality' })).toBe(true);
+    expect(isInstitutionalLead({ businessName: 'Luxury Abaya DXB' })).toBe(false);
+  });
+
+  test('flags institutional instagram handles', () => {
+    expect(isInstitutionalLead({ instagramHandle: 'uaemgov' })).toBe(true);
+    expect(isInstitutionalLead({ instagramHandle: 'luxury_abaya_dxb' })).toBe(false);
   });
 });
 

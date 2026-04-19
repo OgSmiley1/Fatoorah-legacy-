@@ -70,12 +70,34 @@ export function normalizePhone(p: string | null | undefined): string | null {
   return digits;
 }
 
+// Patterns that match gov / institutional / telco handles — not prospective merchants.
+const INSTITUTIONAL_HANDLE_RE =
+  /(^|[_.])?(gov|govt|government|ministry|municipality|federal|authority|directorate|department|official|police|rta|dnrd|mohre|moh|moe|dha|adnoc|etisalat|du_uae|uaemgov|dxbgov|abudhabi_gov)($|[_.])/i;
+
 export function normalizeHandle(h: string | null | undefined): string | null {
   if (!h) return null;
   const clean = String(h).replace(/^@/, '').replace(/\/+$/, '').trim().toLowerCase();
   if (!/^[a-z0-9._]+$/.test(clean)) return null;
   if (['p', 'reel', 'explore', 'stories', 'tr', 'sharer', 'plugins'].includes(clean)) return null;
+  if (INSTITUTIONAL_HANDLE_RE.test(clean)) return null;
   return clean;
+}
+
+// Reject any lead whose signals indicate a government / institutional / telco entity.
+// These aren't merchants and pollute the dataset with contacts like amer@dnrd.ae.
+const INSTITUTIONAL_EMAIL_RE = /@([a-z0-9-]+\.)*(gov|gov\.ae|ae\.gov|dnrd\.ae|mohre\.gov\.ae|rta\.ae|police\.ae|dha\.gov\.ae|moe\.gov\.ae)$/i;
+const INSTITUTIONAL_NAME_RE =
+  /\b(ministry|municipality|authority|government|federal|department|directorate|police|embassy|consulate|customs|immigration|naturalization|residency|traffic)\b/i;
+
+export function isInstitutionalLead(lead: {
+  businessName?: string | null;
+  email?: string | null;
+  instagramHandle?: string | null;
+}): boolean {
+  if (lead.email && INSTITUTIONAL_EMAIL_RE.test(lead.email)) return true;
+  if (lead.businessName && INSTITUTIONAL_NAME_RE.test(lead.businessName)) return true;
+  if (lead.instagramHandle && INSTITUTIONAL_HANDLE_RE.test(lead.instagramHandle)) return true;
+  return false;
 }
 
 export function normalizeEmail(e: string | null | undefined): string | null {
@@ -158,8 +180,11 @@ export function buildConsensus(raw: RawLead[]): ConsensusLead[] {
     g.verifiedStatus = statusFor(g.agreementScore);
   }
 
+  // Drop gov / institutional / telco entities — they're not merchants.
+  const merchantsOnly = Array.from(groups.values()).filter((g) => !isInstitutionalLead(g));
+
   // Sort: VERIFIED first, then LIKELY, then UNVERIFIED, by agreement score
-  return Array.from(groups.values()).sort((a, b) => {
+  return merchantsOnly.sort((a, b) => {
     if (a.verifiedStatus !== b.verifiedStatus) {
       const order = { VERIFIED: 0, LIKELY: 1, UNVERIFIED: 2 };
       return order[a.verifiedStatus] - order[b.verifiedStatus];
