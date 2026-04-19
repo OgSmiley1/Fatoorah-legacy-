@@ -264,6 +264,84 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // Apify-style dataset export — CSV and JSON
+  app.get("/api/export/merchants.:format", (req, res) => {
+    const format = (req.params.format || '').toLowerCase();
+    if (format !== 'csv' && format !== 'json') {
+      return res.status(400).json({ error: "format must be 'csv' or 'json'" });
+    }
+    const rows = db.prepare(`
+      SELECT
+        m.id, m.business_name, m.source_platform, m.source_url,
+        m.phone, m.whatsapp, m.email, m.instagram_handle,
+        m.facebook_url, m.tiktok_handle, m.physical_address,
+        m.category, m.dul_number,
+        m.confidence_score, m.contactability_score, m.myfatoorah_fit_score,
+        m.metadata_json, m.created_at,
+        l.status as lead_status
+      FROM merchants m
+      LEFT JOIN leads l ON l.merchant_id = m.id
+      ORDER BY m.myfatoorah_fit_score DESC, m.created_at DESC
+      LIMIT 5000
+    `).all() as any[];
+
+    const records = rows.map(r => {
+      let metadata: any = {};
+      try { metadata = r.metadata_json ? JSON.parse(r.metadata_json) : {}; } catch {}
+      return {
+        id: r.id,
+        businessName: r.business_name,
+        platform: r.source_platform,
+        url: r.source_url,
+        phone: r.phone,
+        whatsapp: r.whatsapp,
+        email: r.email,
+        instagramHandle: r.instagram_handle,
+        facebookUrl: r.facebook_url,
+        tiktokHandle: r.tiktok_handle,
+        physicalAddress: r.physical_address,
+        category: r.category,
+        dulNumber: r.dul_number,
+        confidenceScore: r.confidence_score,
+        contactScore: r.contactability_score,
+        fitScore: r.myfatoorah_fit_score,
+        isCOD: Boolean(metadata.isCOD),
+        hasGateway: Boolean(metadata.hasGateway),
+        paymentMethods: Array.isArray(metadata.paymentMethods) ? metadata.paymentMethods.join('|') : '',
+        codEvidence: Array.isArray(metadata.codEvidence) ? metadata.codEvidence.join('|') : '',
+        leadStatus: r.lead_status || 'NEW',
+        createdAt: r.created_at,
+      };
+    });
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', 'attachment; filename="merchants.json"');
+      return res.json(records);
+    }
+
+    // CSV — RFC4180 quoting
+    const columns = records.length ? Object.keys(records[0]) : [
+      'id', 'businessName', 'platform', 'url', 'phone', 'whatsapp', 'email',
+      'instagramHandle', 'facebookUrl', 'tiktokHandle', 'physicalAddress',
+      'category', 'dulNumber', 'confidenceScore', 'contactScore', 'fitScore',
+      'isCOD', 'hasGateway', 'paymentMethods', 'codEvidence', 'leadStatus', 'createdAt',
+    ];
+    const esc = (v: any) => {
+      if (v == null) return '';
+      const s = String(v);
+      if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const lines = [columns.join(',')];
+    for (const r of records) {
+      lines.push(columns.map(c => esc((r as any)[c])).join(','));
+    }
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="merchants.csv"');
+    res.send(lines.join('\n'));
+  });
+
   // Stats
   app.get("/api/stats", (req, res) => {
     const stats = {

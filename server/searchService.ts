@@ -18,6 +18,9 @@ import {
   PHONE_RE,
   EMAIL_RE,
 } from './searchParsers';
+import { extractJsonLd, extractMeta } from './actors/jsonLdExtractor';
+import { searchNominatim } from './actors/nominatimActor';
+import { parseInstagramHtml } from './actors/instagramActor';
 
 // Re-export pure helpers so existing callers & tests keep working
 export {
@@ -151,6 +154,9 @@ async function enrichFromWebsite(websiteUrl: string): Promise<any> {
   const gatewaysFound = new Set<string>();
   let isCod = false;
   const codEvidence: string[] = [];
+  // Apify-style: layer structured-data extraction on top of regex scrape
+  let structured: any = null;
+  let meta: any = null;
 
   for (const p of pages) {
     if (p.status !== 'fulfilled' || !p.value) continue;
@@ -169,40 +175,124 @@ async function enrichFromWebsite(websiteUrl: string): Promise<any> {
 
     const gw = detectGateways(html);
     for (const g of gw.gateways) gatewaysFound.add(g);
+
+    // JSON-LD / schema.org gives canonical name, telephone, address, sameAs (socials)
+    if (!structured) {
+      const s = extractJsonLd(html);
+      if (s) structured = s;
+    }
+    if (!meta) meta = extractMeta(html);
   }
 
   merged.isCod = isCod;
   merged.codEvidence = codEvidence;
   merged.paymentGateways = Array.from(gatewaysFound);
   merged.hasGateway = gatewaysFound.size > 0;
+  merged.structured = structured;
+  merged.meta = meta;
   return merged;
+}
+
+// Fetch Instagram profile HTML and parse og:description / meta
+async function enrichFromInstagram(handle: string): Promise<any> {
+  if (!handle) return null;
+  const clean = handle.replace(/^@/, '').replace(/\/+$/, '');
+  if (!/^[a-zA-Z0-9._]+$/.test(clean)) return null;
+  const url = `https://www.instagram.com/${clean}/`;
+  const html = await safeFetch(url, 6000);
+  if (!html) return null;
+  return parseInstagramHtml(clean, html);
 }
 
 // Exported for discovery.ts — kept backward compatible
 export async function enrichMerchantContacts(m: any) {
   const websiteUrl = m.website || (m.platform === 'website' ? m.url : null);
-  if (!websiteUrl) return m;
+  const sources: string[] = [];
 
-  try {
-    const webContacts = await enrichFromWebsite(websiteUrl);
-    m.phone = m.phone || webContacts.phone || null;
-    m.email = m.email || webContacts.email || null;
-    m.whatsapp = m.whatsapp || webContacts.whatsapp || null;
-    m.instagramHandle = m.instagramHandle || webContacts.instagram || null;
-    m.facebookUrl = m.facebookUrl || webContacts.facebook || null;
-    m.tiktokHandle = m.tiktokHandle || webContacts.tiktok || null;
+  if (websiteUrl) {
+    try {
+      const webContacts = await enrichFromWebsite(websiteUrl);
+      m.phone = m.phone || webContacts.phone || null;
+      m.email = m.email || webContacts.email || null;
+      m.whatsapp = m.whatsapp || webContacts.whatsapp || null;
+      m.instagramHandle = m.instagramHandle || webContacts.instagram || null;
+      m.facebookUrl = m.facebookUrl || webContacts.facebook || null;
+      m.tiktokHandle = m.tiktokHandle || webContacts.tiktok || null;
 
-    // COD + gateway intelligence — the core Apify-grade qualification
-    m.isCOD = Boolean(webContacts.isCod);
-    m.codEvidence = webContacts.codEvidence || [];
-    m.paymentMethods = webContacts.paymentGateways || [];
-    m.hasGateway = Boolean(webContacts.hasGateway);
+      // COD + gateway intelligence — the core Apify-grade qualification
+      m.isCOD = Boolean(webContacts.isCod);
+      m.codEvidence = webContacts.codEvidence || [];
+      m.paymentMethods = webContacts.paymentGateways || [];
+      m.hasGateway = Boolean(webContacts.hasGateway);
 
-    if (webContacts.phone || webContacts.email) {
-      m.contactValidation = { status: 'VERIFIED', sources: ['Website Scraping'] };
+      // Layer JSON-LD structured data — highest-fidelity signal when present
+      const s = webContacts.structured;
+      if (s) {
+        if (!m.phone && s.telephone) m.phone = s.telephone;
+        if (!m.email && s.email) m.email = s.email;
+        if (s.name && (!m.businessName || m.businessName.length < s.name.length)) {
+          m.businessName = s.name;
+        }
+        const addrParts = [s.address, s.addressLocality, s.addressRegion, s.addressCountry]
+          .filter(Boolean)
+          .join(', ');
+        if (addrParts && !m.physicalAddress) m.physicalAddress = addrParts;
+        m.structuredData = s;
+        // sameAs links → fill in missing socials
+        for (const link of s.sameAs || []) {
+          if (!m.instagramHandle && /instagram\.com\//i.test(link)) {
+            const h = link.match(/instagram\.com\/([a-zA-Z0-9._]+)/i);
+            if (h) m.instagramHandle = h[1];
+          }
+          if (!m.facebookUrl && /facebook\.com\//i.test(link)) m.facebookUrl = link;
+          if (!m.tiktokHandle && /tiktok\.com\/@/i.test(link)) {
+            const h = link.match(/tiktok\.com\/@([a-zA-Z0-9._]+)/i);
+            if (h) m.tiktokHandle = h[1];
+          }
+        }
+        sources.push('JSON-LD');
+      }
+      if (webContacts.meta) m.metaSignals = webContacts.meta;
+
+      if (webContacts.phone || webContacts.email || s) sources.push('Website Scraping');
+    } catch (e: any) {
+      logger.debug('website_enrichment_failed', { url: websiteUrl, error: e.message });
     }
-  } catch (e: any) {
-    logger.debug('website_enrichment_failed', { url: websiteUrl, error: e.message });
+  }
+
+  // Instagram profile enrichment — pulls bio, followers, external URL
+  if (m.instagramHandle) {
+    try {
+      const ig = await enrichFromInstagram(m.instagramHandle);
+      if (ig) {
+        m.instagramProfile = ig;
+        if (ig.followers && !m.followers) m.followers = ig.followers;
+        if (ig.bio && !m.bio) m.bio = ig.bio;
+        if (ig.externalUrl && !m.website) m.website = ig.externalUrl;
+        if (ig.category && !m.category) m.category = ig.category;
+        // bio commonly contains phone / email not present elsewhere
+        if (ig.bio) {
+          if (!m.phone) {
+            const ph = ig.bio.match(PHONE_RE);
+            if (ph) m.phone = ph[0].replace(/[\s\-]/g, '');
+          }
+          if (!m.email) {
+            const em = ig.bio.match(EMAIL_RE);
+            if (em) m.email = em[0];
+          }
+        }
+        sources.push('Instagram Profile');
+      }
+    } catch (e: any) {
+      logger.debug('instagram_enrichment_failed', { handle: m.instagramHandle, error: e.message });
+    }
+  }
+
+  if (m.phone || m.email) {
+    m.contactValidation = {
+      status: 'VERIFIED',
+      sources: sources.length ? sources : ['Scraper'],
+    };
   }
   return m;
 }
@@ -305,15 +395,19 @@ async function runHunt(
     if (r.status === 'fulfilled') raw.push(...r.value);
   }
 
-  // InvestInDubai enrichment (only if UAE)
+  // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
   if (isUAE) {
-    try {
-      const dubai = await withTimeout(
-        scrapeInvestInDubai(keywords, 10),
-        10_000,
-        'investindubai'
-      );
-      for (const r of dubai) {
+    const govSources = await Promise.allSettled([
+      withTimeout(scrapeInvestInDubai(keywords, 10), 10_000, 'investindubai'),
+      withTimeout(
+        searchNominatim({ query: `${keywords} ${location}`, countryCode: 'ae', limit: 15 }),
+        9_000,
+        'nominatim'
+      ),
+    ]);
+
+    if (govSources[0].status === 'fulfilled') {
+      for (const r of govSources[0].value) {
         raw.push({
           url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
             r.businessName
@@ -326,8 +420,24 @@ async function runHunt(
           isInvestInDubai: true,
         });
       }
-    } catch (e: any) {
-      logger.debug('investindubai_skipped', { error: e.message });
+    } else {
+      logger.debug('investindubai_skipped', { error: (govSources[0] as any).reason?.message });
+    }
+
+    if (govSources[1].status === 'fulfilled') {
+      for (const p of govSources[1].value) {
+        const url = p.website ||
+          `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
+        raw.push({
+          url,
+          title: p.name,
+          description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
+          businessName: p.name,
+          category: p.category,
+        });
+      }
+    } else {
+      logger.debug('nominatim_skipped', { error: (govSources[1] as any).reason?.message });
     }
   }
 
