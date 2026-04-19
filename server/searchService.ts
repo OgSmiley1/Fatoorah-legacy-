@@ -20,7 +20,7 @@ import {
 } from './searchParsers';
 import { extractJsonLd, extractMeta } from './actors/jsonLdExtractor';
 import { searchNominatim } from './actors/nominatimActor';
-import { parseInstagramHtml } from './actors/instagramActor';
+import { parseInstagramHtml, parseInstagramWebProfileJson } from './actors/instagramActor';
 import { braveSearch } from './actors/braveSearch';
 import { startpageSearch } from './actors/startpageSearch';
 import { mojeekSearch } from './actors/mojeekSearch';
@@ -223,13 +223,36 @@ async function enrichFromWebsite(websiteUrl: string): Promise<any> {
   return merged;
 }
 
-// Fetch Instagram profile HTML and parse og:description / meta
+// Fetch Instagram profile data. Tries the public web_profile_info JSON endpoint
+// first (gives accurate follower counts), then falls back to og:description HTML.
 async function enrichFromInstagram(handle: string): Promise<any> {
   if (!handle) return null;
   const clean = handle.replace(/^@/, '').replace(/\/+$/, '');
   if (!/^[a-zA-Z0-9._]+$/.test(clean)) return null;
-  const url = `https://www.instagram.com/${clean}/`;
-  const html = await safeFetch(url, 6000);
+
+  // Path 1: web_profile_info — the same endpoint instagram.com uses for profile cards.
+  try {
+    const res = await axios.get(
+      `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(clean)}`,
+      {
+        timeout: 6000,
+        headers: {
+          'User-Agent': 'Instagram 219.0.0.12.117 Android',
+          'X-IG-App-ID': '936619743392459',
+          Accept: '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        validateStatus: (s) => s >= 200 && s < 400,
+      }
+    );
+    const profile = parseInstagramWebProfileJson(clean, res.data);
+    if (profile && profile.followers !== undefined) return profile;
+  } catch (e: any) {
+    logger.debug('ig_web_profile_failed', { handle: clean, error: e?.message });
+  }
+
+  // Path 2: HTML og:description fallback.
+  const html = await safeFetch(`https://www.instagram.com/${clean}/?hl=en`, 6000);
   if (!html) return null;
   return parseInstagramHtml(clean, html);
 }
@@ -365,6 +388,10 @@ interface SearchParams {
   keywords: string;
   location: string;
   maxResults?: number;
+  // Sales-pipeline mode: drop merchants that already have a payment gateway
+  // (Stripe/Tap/PayTabs/Checkout/etc.) since those aren't MyFatoorah prospects.
+  // Default true — this is a MyFatoorah lead hunter.
+  onlyQualified?: boolean;
 }
 
 export async function huntMerchants(
@@ -401,19 +428,20 @@ async function runHunt(
   runId: string,
   onProgress?: (count: number, stage?: string) => void
 ) {
-  const { keywords, location, maxResults = 25 } = params;
+  const { keywords, location, maxResults = 25, onlyQualified = true } = params;
 
   const isUAE = /dubai|uae|emirates|abu\s*dhabi|sharjah|ajman|fujairah|khaimah/i.test(
     location
   );
 
-  // Wider query mix so engines have more to cross-confirm
+  // Query mix tilted toward MyFatoorah-prospect merchants: cash-on-delivery,
+  // whatsapp-based ordering, instagram shops, small-biz w/o gateways.
   const queries: string[] = [
-    `${keywords} ${location} instagram OR tiktok OR whatsapp contact`,
-    `${keywords} ${location} shop online "whatsapp"`,
-    `${keywords} ${location} site:instagram.com`,
-    `${keywords} ${location} "cash on delivery" OR "pay on delivery"`,
-    `${keywords} ${location} contact phone email`,
+    `${keywords} ${location} "cash on delivery" OR "pay on delivery" whatsapp`,
+    `${keywords} ${location} site:instagram.com shop order dm`,
+    `${keywords} ${location} "order on whatsapp" OR "whatsapp to order"`,
+    `${keywords} ${location} small business instagram shop contact`,
+    `${keywords} ${location} cod "bank transfer" OR "cash" order`,
   ];
 
   // Run all searches in parallel across 7 engines (see webSearch)
@@ -633,6 +661,10 @@ async function runHunt(
     if (!m) continue;
     if (finalMerchants.length >= maxResults) break;
 
+    // MyFatoorah lead filter: skip merchants that already have a gateway.
+    // These are not onboardable prospects for a payment-gateway sales pitch.
+    if (onlyQualified && (m as any).hasGateway) continue;
+
     const dupCheck = checkDuplicate(m);
     if (dupCheck.isDuplicate) continue;
 
@@ -657,6 +689,10 @@ async function runHunt(
       Math.min(100, fitScore + qualifiedBoost - gatewayPenalty)
     );
 
+    // MyFatoorah-ready prospect: no existing gateway AND has a reachable contact.
+    // This is the signal a sales rep acts on.
+    const mfReady = !hasGateway && Boolean(m.phone || m.whatsapp || m.email);
+
     const metadata = {
       risk: {
         score: 20,
@@ -678,6 +714,7 @@ async function runHunt(
       paymentMethods,
       isCOD: isCod,
       hasGateway,
+      mfReady,
       codEvidence: (m as any).codEvidence || [],
       // Multi-source verification signals
       verifiedStatus: (m as any).verifiedStatus || 'UNVERIFIED',
@@ -697,8 +734,8 @@ async function runHunt(
           phone, whatsapp, email, instagram_handle, github_url,
           facebook_url, tiktok_handle, physical_address,
           category, dul_number, confidence_score, contactability_score,
-          myfatoorah_fit_score, evidence_json, contact_validation_json, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          myfatoorah_fit_score, followers, evidence_json, contact_validation_json, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         merchantId,
         m.businessName,
@@ -718,6 +755,7 @@ async function runHunt(
         confidenceScore,
         contactScore,
         adjustedFitScore,
+        typeof m.followers === 'number' && m.followers > 0 ? m.followers : null,
         JSON.stringify(m.evidence || []),
         JSON.stringify(contactValidation),
         JSON.stringify(metadata)

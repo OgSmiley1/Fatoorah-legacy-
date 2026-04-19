@@ -133,6 +133,16 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   COD
                 </span>
               )}
+              {merchant.mfReady && (
+                <span className="bg-emerald-500/10 text-emerald-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30 uppercase tracking-wider">
+                  MyFatoorah-ready
+                </span>
+              )}
+              {merchant.hasGateway && (
+                <span className="bg-slate-700/40 text-slate-300 text-[9px] font-bold px-2 py-0.5 rounded-full border border-slate-600 uppercase tracking-wider">
+                  Has gateway
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">
