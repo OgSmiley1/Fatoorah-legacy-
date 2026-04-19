@@ -1,200 +1,244 @@
-import { search } from 'duck-duck-scrape';
 import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
+import { search as ddgLibSearch } from 'duck-duck-scrape';
 import db from '../db';
 import { checkDuplicate, normalizeName } from './dedupService';
 import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
+import {
+  type SearchResult,
+  decodeHtml,
+  stripTags,
+  parseDdgHtml,
+  parseBingHtml,
+  detectCod,
+  detectGateways,
+  extractContacts,
+  PHONE_RE,
+  EMAIL_RE,
+} from './searchParsers';
+
+// Re-export pure helpers so existing callers & tests keep working
+export {
+  decodeHtml,
+  stripTags,
+  parseDdgHtml,
+  parseBingHtml,
+  detectCod,
+  detectGateways,
+  extractContacts,
+};
 
 const USER_AGENTS = [
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0',
 ];
 
 function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-async function googleSearch(query: string): Promise<any[]> {
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// --- HTTP helper with tight timeout ---
+async function safeFetch(url: string, timeoutMs = 6000): Promise<string | null> {
   try {
-    const url = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
-    const response = await axios.get(url, {
-      timeout: 4000,
+    const res = await axios.get(url, {
+      timeout: timeoutMs,
       headers: {
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-      }
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+      },
+      maxRedirects: 3,
+      validateStatus: s => s >= 200 && s < 400,
+      responseType: 'text',
+      transformResponse: [(d) => d],
     });
+    return typeof res.data === 'string' ? res.data : null;
+  } catch {
+    return null;
+  }
+}
 
-    const html = response.data;
-    const results: any[] = [];
-    
-    // Basic regex-based parsing for Google search results
-    // This is fragile but works for a "free" scraper
-    const resultBlocks = html.split('<div class="g">').slice(1);
-    
-    for (const block of resultBlocks) {
-      const urlMatch = block.match(/href="([^"]+)"/);
-      const titleMatch = block.match(/<h3[^>]*>([^<]+)<\/h3>/);
-      const snippetMatch = block.match(/<div[^>]*class="VwiC3b[^>]*>([^<]+)<\/div>/);
-      
-      if (urlMatch && urlMatch[1].startsWith('http')) {
-        results.push({
-          url: urlMatch[1],
-          title: titleMatch ? titleMatch[1] : '',
-          description: snippetMatch ? snippetMatch[1] : '',
-        });
-      }
-    }
-    
-    return results;
-  } catch (error: any) {
-    logger.error('google_search_failed', { query, error: error.message });
+// --- DuckDuckGo HTML endpoint (stable, no JS) ---
+async function ddgHtmlSearch(query: string): Promise<SearchResult[]> {
+  const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const html = await safeFetch(url, 8000);
+  return html ? parseDdgHtml(html) : [];
+}
+
+// --- Bing HTML fallback ---
+async function bingHtmlSearch(query: string): Promise<SearchResult[]> {
+  const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}&count=20`;
+  const html = await safeFetch(url, 8000);
+  return html ? parseBingHtml(html) : [];
+}
+
+// --- DDG library fallback (uses their JSON endpoint — different code path than HTML) ---
+async function ddgLibrarySearch(query: string): Promise<SearchResult[]> {
+  try {
+    const res: any = await Promise.race([
+      ddgLibSearch(query, { safeSearch: 0 }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('ddg_lib_timeout')), 9000)),
+    ]);
+    const items = (res?.results || []) as any[];
+    return items.slice(0, 20).map(r => ({
+      url: r.url,
+      title: (r.title || '').trim(),
+      description: (r.description || '').trim(),
+    })).filter(r => r.url && r.url.startsWith('http'));
+  } catch {
     return [];
   }
 }
 
-async function extractContactsFromHtml(html: string, url: string) {
-  const contacts: any = {
-    phone: null,
-    email: null,
-    whatsapp: null,
-    instagram: null,
-    facebook: null,
-    tiktok: null,
-    address: null,
-  };
+// Primary search: try DDG HTML, then Bing, then DDG library — merge all
+async function webSearch(query: string): Promise<SearchResult[]> {
+  // Run all three engines in parallel so the slowest doesn't gate the others
+  const settled = await Promise.allSettled([
+    ddgHtmlSearch(query),
+    bingHtmlSearch(query),
+    ddgLibrarySearch(query),
+  ]);
 
-  // Phone numbers (GCC format, general, and 800 toll free)
-  const phoneRegex = /(?:(?:\+971|00971|0)[\s\-]?(?:50|52|54|55|56|58|2|3|4|6|7|9)[\s\-]?\d(?:[\s\-]?\d){6})|(?:800[\s\-]?\d(?:[\s\-]?\d){5})/g;
-  const phoneMatches = html.match(phoneRegex);
-  if (phoneMatches) contacts.phone = phoneMatches[0].replace(/[\s\-]/g, '');
+  const merged: SearchResult[] = [];
+  for (const s of settled) {
+    if (s.status === 'fulfilled') merged.push(...s.value);
+  }
 
-  // Emails
-  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-  const emailMatches = html.match(emailRegex);
-  if (emailMatches) contacts.email = emailMatches[0];
+  // Dedupe by URL
+  const seen = new Set<string>();
+  const out: SearchResult[] = [];
+  for (const r of merged) {
+    if (!r.url || seen.has(r.url)) continue;
+    seen.add(r.url);
+    out.push(r);
+  }
 
-  // WhatsApp links
-  const waRegex = /wa\.me\/(\d+)|api\.whatsapp\.com\/send\?phone=(\d+)/;
-  const waMatch = html.match(waRegex);
-  if (waMatch) contacts.whatsapp = waMatch[1] || waMatch[2];
-
-  // Social handles
-  const igRegex = /instagram\.com\/([a-zA-Z0-9._]+)/;
-  const fbRegex = /facebook\.com\/([a-zA-Z0-9._]+)/;
-  const ttRegex = /tiktok\.com\/@([a-zA-Z0-9._]+)/;
-
-  const igMatch = html.match(igRegex);
-  if (igMatch) contacts.instagram = igMatch[1];
-
-  const fbMatch = html.match(fbRegex);
-  if (fbMatch) contacts.facebook = fbMatch[1];
-
-  const ttMatch = html.match(ttRegex);
-  if (ttMatch) contacts.tiktok = ttMatch[1];
-
-  return contacts;
+  logger.debug('web_search_done', {
+    query,
+    ddg: settled[0].status === 'fulfilled' ? settled[0].value.length : 0,
+    bing: settled[1].status === 'fulfilled' ? settled[1].value.length : 0,
+    ddgLib: settled[2].status === 'fulfilled' ? settled[2].value.length : 0,
+    merged: out.length,
+  });
+  return out;
 }
 
+// Fetch root + /contact in parallel — tight timeout
+async function enrichFromWebsite(websiteUrl: string): Promise<any> {
+  if (!websiteUrl) return {};
+  let base = websiteUrl;
+  if (!base.startsWith('http')) base = 'https://' + base;
+
+  let origin: string;
+  try {
+    origin = new URL(base).origin;
+  } catch {
+    return {};
+  }
+
+  const candidates = [base, `${origin}/contact`, `${origin}/contact-us`];
+  const pages = await Promise.allSettled(
+    candidates.map(u => safeFetch(u, 5000))
+  );
+
+  const merged: any = {};
+  const gatewaysFound = new Set<string>();
+  let isCod = false;
+  const codEvidence: string[] = [];
+
+  for (const p of pages) {
+    if (p.status !== 'fulfilled' || !p.value) continue;
+    const html = p.value;
+
+    const c = extractContacts(html);
+    for (const k of Object.keys(c)) {
+      if (!merged[k] && c[k]) merged[k] = c[k];
+    }
+
+    const cod = detectCod(html);
+    if (cod.isCod) {
+      isCod = true;
+      for (const e of cod.evidence) if (!codEvidence.includes(e)) codEvidence.push(e);
+    }
+
+    const gw = detectGateways(html);
+    for (const g of gw.gateways) gatewaysFound.add(g);
+  }
+
+  merged.isCod = isCod;
+  merged.codEvidence = codEvidence;
+  merged.paymentGateways = Array.from(gatewaysFound);
+  merged.hasGateway = gatewaysFound.size > 0;
+  return merged;
+}
+
+// Exported for discovery.ts — kept backward compatible
 export async function enrichMerchantContacts(m: any) {
-  logger.info('enriching_merchant_contacts', { name: m.businessName });
-  
-  // 1. Try fetching their website if available
-  let websiteUrl = m.website || (m.platform === 'website' ? m.url : null);
-  if (websiteUrl) {
-    if (!websiteUrl.startsWith('http')) {
-      websiteUrl = 'https://' + websiteUrl;
-    }
-    try {
-      const response = await axios.get(websiteUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
-      const webContacts = await extractContactsFromHtml(response.data, websiteUrl);
-      
-      if (!webContacts.phone || !webContacts.email) {
-        try {
-          const contactUrl = new URL('/contact', websiteUrl).href;
-          const contactResponse = await axios.get(contactUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
-          const contactPageContacts = await extractContactsFromHtml(contactResponse.data, contactUrl);
-          webContacts.phone = webContacts.phone || contactPageContacts.phone;
-          webContacts.email = webContacts.email || contactPageContacts.email;
-          webContacts.whatsapp = webContacts.whatsapp || contactPageContacts.whatsapp;
-        } catch (e) {
-          try {
-            const contactUsUrl = new URL('/contact-us', websiteUrl).href;
-            const contactUsResponse = await axios.get(contactUsUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
-            const contactUsPageContacts = await extractContactsFromHtml(contactUsResponse.data, contactUsUrl);
-            webContacts.phone = webContacts.phone || contactUsPageContacts.phone;
-            webContacts.email = webContacts.email || contactUsPageContacts.email;
-            webContacts.whatsapp = webContacts.whatsapp || contactUsPageContacts.whatsapp;
-          } catch (e2) {
-            try {
-              const aboutUsUrl = new URL('/about-us', websiteUrl).href;
-              const aboutUsResponse = await axios.get(aboutUsUrl, { timeout: 4000, headers: { 'User-Agent': getRandomUserAgent() } });
-              const aboutUsPageContacts = await extractContactsFromHtml(aboutUsResponse.data, aboutUsUrl);
-              webContacts.phone = webContacts.phone || aboutUsPageContacts.phone;
-              webContacts.email = webContacts.email || aboutUsPageContacts.email;
-              webContacts.whatsapp = webContacts.whatsapp || aboutUsPageContacts.whatsapp;
-            } catch (e3) {
-              // Ignore
-            }
-          }
-        }
-      }
-      
-      // Prioritize website contacts over search snippet contacts
-      m.phone = webContacts.phone || m.phone;
-      m.email = webContacts.email || m.email;
-      m.whatsapp = webContacts.whatsapp || m.whatsapp;
-      m.instagramHandle = webContacts.instagram || m.instagramHandle;
-      m.facebookUrl = webContacts.facebook || m.facebookUrl;
-      m.tiktokHandle = webContacts.tiktok || m.tiktokHandle;
-      
-      // Update validation source
-      if (webContacts.phone || webContacts.email) {
-        m.contactValidation = { status: 'VERIFIED', sources: ['Website Scraping'] };
-      }
-    } catch (e: any) {
-      // Many sites block automated requests (403 Forbidden, etc.)
-      // We gracefully fallback to search engine enrichment below.
-      logger.debug('website_enrichment_failed', { url: websiteUrl, status: e.response?.status || 'network_error' });
-    }
-  }
+  const websiteUrl = m.website || (m.platform === 'website' ? m.url : null);
+  if (!websiteUrl) return m;
 
-  // 2. Follow-up search for contact details if still missing
-  if (!m.phone || !m.email) {
-    const enrichmentQuery = `"${m.businessName}" ${m.category || ''} contact phone email whatsapp`;
-    
-    // Try googleSearch first, then safeSearch
-    let enrichmentResults = await googleSearch(enrichmentQuery);
-    if (enrichmentResults.length === 0) {
-      enrichmentResults = await safeSearch(enrichmentQuery);
-    }
-    
-    for (const res of enrichmentResults) {
-      const snippet = res.description || '';
-      
-      if (!m.phone) {
-        const phoneMatch = snippet.match(/(?:(?:\+971|00971|0)[\s\-]?(?:50|52|54|55|56|58|2|3|4|6|7|9)[\s\-]?\d(?:[\s\-]?\d){6})|(?:800[\s\-]?\d(?:[\s\-]?\d){5})/);
-        if (phoneMatch) m.phone = phoneMatch[0].replace(/[\s\-]/g, '');
-      }
-      
-      if (!m.email) {
-        const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        if (emailMatch) m.email = emailMatch[0];
-      }
-      
-      if (!m.whatsapp) {
-        const waMatch = snippet.match(/wa\.me\/(\d+)/);
-        if (waMatch) m.whatsapp = waMatch[1];
-      }
-    }
-  }
+  try {
+    const webContacts = await enrichFromWebsite(websiteUrl);
+    m.phone = m.phone || webContacts.phone || null;
+    m.email = m.email || webContacts.email || null;
+    m.whatsapp = m.whatsapp || webContacts.whatsapp || null;
+    m.instagramHandle = m.instagramHandle || webContacts.instagram || null;
+    m.facebookUrl = m.facebookUrl || webContacts.facebook || null;
+    m.tiktokHandle = m.tiktokHandle || webContacts.tiktok || null;
 
+    // COD + gateway intelligence — the core Apify-grade qualification
+    m.isCOD = Boolean(webContacts.isCod);
+    m.codEvidence = webContacts.codEvidence || [];
+    m.paymentMethods = webContacts.paymentGateways || [];
+    m.hasGateway = Boolean(webContacts.hasGateway);
+
+    if (webContacts.phone || webContacts.email) {
+      m.contactValidation = { status: 'VERIFIED', sources: ['Website Scraping'] };
+    }
+  } catch (e: any) {
+    logger.debug('website_enrichment_failed', { url: websiteUrl, error: e.message });
+  }
   return m;
+}
+
+// Run an async task list with bounded concurrency
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      try {
+        out[i] = await fn(items[i], i);
+      } catch (e: any) {
+        out[i] = undefined as any;
+      }
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// Run a promise with a hard timeout
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label}_timeout_${ms}ms`)), ms);
+    p.then(
+      v => { clearTimeout(t); resolve(v); },
+      e => { clearTimeout(t); reject(e); }
+    );
+  });
 }
 
 interface SearchParams {
@@ -203,224 +247,288 @@ interface SearchParams {
   maxResults?: number;
 }
 
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
-async function safeSearch(query: string, retries = 3): Promise<any[]> {
-  for (let i = 0; i <= retries; i++) {
-    try {
-      // Add a significant delay before each attempt to cool down
-      // First attempt: 2-4s, subsequent attempts: 10s, 20s, 30s...
-      const initialDelay = i === 0 ? 1000 : 8000 * i;
-      await sleep(initialDelay + Math.random() * 3000);
-      
-      const results = await search(query, { safeSearch: 0 });
-      return results.results || [];
-    } catch (error: any) {
-      if (i === retries) {
-        logger.error('search_strategy_failed', { query, error: error.message });
-        return [];
-      }
-      // Aggressive backoff: 15s, 30s, 45s...
-      const delay = 15000 * (i + 1) + Math.random() * 10000; 
-      logger.warn('search_retry', { query, attempt: i + 1, delay });
-      await sleep(delay);
-    }
-  }
-  return [];
-}
-
-export async function huntMerchants(params: SearchParams, onProgress?: (count: number) => void) {
+export async function huntMerchants(
+  params: SearchParams,
+  onProgress?: (count: number, stage?: string) => void
+) {
   const { keywords, location, maxResults = 15 } = params;
   const runId = uuidv4();
-  
+  const HARD_DEADLINE_MS = 75_000;
+
   logger.info('hunt_started', { runId, keywords, location, maxResults });
+  onProgress?.(0, 'searching');
 
   try {
-    const discoveredMerchants = [];
-    const seenUrls = new Set();
-    
-    // We'll try up to 5 different query variations to get more results if needed
-    const queryVariations = [
-      { type: 'DDG', query: `${keywords} ${location} (site:instagram.com OR site:facebook.com OR site:tiktok.com)` },
-      { type: 'GOOGLE', query: `${keywords} ${location} "whatsapp" "contact"` },
-      { type: 'DDG', query: `${keywords} ${location} business directory` },
-      { type: 'GOOGLE', query: `${keywords} ${location} retailers` },
-      { type: 'INVEST_IN_DUBAI', query: `INVEST_IN_DUBAI` }
-    ];
-
-    for (const variation of queryVariations) {
-      if (discoveredMerchants.length >= maxResults) break;
-
-      logger.info('executing_query_variation', { runId, type: variation.type, query: variation.query });
-      
-      let results: any[] = [];
-      if (variation.type === 'INVEST_IN_DUBAI') {
-        // Only run if location is relevant
-        if (location.toLowerCase().includes('dubai') || location.toLowerCase().includes('emirates') || location.toLowerCase().includes('uae')) {
-          const dubaiResults = await scrapeInvestInDubai(keywords, maxResults - discoveredMerchants.length);
-          // Map to our standard format
-          results = dubaiResults.map(r => ({
-            title: r.businessName,
-            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
-            url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(r.businessName)}`,
-            isInvestInDubai: true,
-            businessName: r.businessName,
-            category: r.category,
-            dulNumber: r.dulNumber
-          }));
-        }
-      } else if (variation.type === 'GOOGLE') {
-        results = await googleSearch(variation.query);
-      } else {
-        results = await safeSearch(variation.query);
-      }
-      
-      for (const result of results) {
-        if (seenUrls.has(result.url)) continue;
-        seenUrls.add(result.url);
-
-        const title = result.title || '';
-        const snippet = result.description || '';
-        const businessName = result.businessName || title.split(/[\|\-\(]/)[0].trim();
-        
-        if (!businessName || businessName.length < 2) continue;
-
-        let platform = 'website';
-        if (result.isInvestInDubai) platform = 'invest_in_dubai';
-        else if (result.url.includes('instagram.com')) platform = 'instagram';
-        else if (result.url.includes('facebook.com')) platform = 'facebook';
-        else if (result.url.includes('tiktok.com')) platform = 'tiktok';
-        else if (result.url.includes('t.me')) platform = 'telegram';
-        else if (result.url.includes('github.com')) platform = 'github';
-
-        let instagramHandle = null;
-        if (platform === 'instagram') {
-          const match = result.url.match(/instagram\.com\/([^\/\?]+)/);
-          if (match) instagramHandle = match[1];
-        }
-
-        const phoneMatch = snippet.match(/(?:(?:\+971|00971|0)[\s\-]?(?:50|52|54|55|56|58|2|3|4|6|7|9)[\s\-]?\d(?:[\s\-]?\d){6})|(?:800[\s\-]?\d(?:[\s\-]?\d){5})/);
-        const phone = phoneMatch ? phoneMatch[0].replace(/[\s\-]/g, '') : null;
-
-        const emailMatch = snippet.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-        const email = emailMatch ? emailMatch[0] : null;
-
-        const merchantData = {
-          businessName,
-          platform,
-          url: result.url,
-          instagramHandle,
-          phone,
-          whatsapp: phone,
-          email,
-          category: result.category || keywords.split(' ')[0],
-          evidence: [snippet],
-          dulNumber: result.dulNumber || null,
-          facebookUrl: null,
-          tiktokHandle: null,
-          physicalAddress: null,
-        };
-
-        // Enrich contacts in background (or sequentially if we want accuracy now)
-        const enriched = await enrichMerchantContacts(merchantData);
-        discoveredMerchants.push(enriched);
-
-        if (onProgress) onProgress(discoveredMerchants.length);
-        if (discoveredMerchants.length >= maxResults) break;
-      }
-
-      // Small delay between variations
-      if (discoveredMerchants.length < maxResults) {
-        await sleep(3000 + Math.random() * 2000);
-      }
-    }
-
-    const finalMerchants = [];
-    let newLeadsCount = 0;
-
-    // Deduplicate and save
-    for (const m of discoveredMerchants) {
-      if (seenUrls.has(m.url)) continue;
-      seenUrls.add(m.url);
-
-      const dupCheck = checkDuplicate(m);
-      if (!dupCheck.isDuplicate) {
-        const merchantId = uuidv4();
-        const fitScore = computeFitScore(m.platform, m.followers || 0);
-        const contactScore = computeContactScore(m);
-        const confidenceScore = computeConfidence(m);
-        const contactValidation = m.contactValidation || {
-          status: (m.phone || m.email) ? 'VERIFIED' : 'UNVERIFIED',
-          sources: ['Scraper', m.platform]
-        };
-
-        const risk = { score: 20, category: 'LOW', emoji: '🛡️', color: 'emerald', factors: ['New discovery'] };
-        const scripts = { arabic: '', english: '', whatsapp: '', instagram: '' };
-        const metadata = {
-          risk,
-          scripts,
-          revenue: { monthly: 0, annual: 0 },
-          pricing: { setupFee: 0, transactionRate: "2.5%", settlementCycle: "T+1" },
-          roi: { feeSavings: 0, bnplUplift: 0, cashFlowGain: 0, totalMonthlyGain: 0, annualImpact: 0 },
-          paymentMethods: [],
-          otherProfiles: [],
-          foundDate: new Date().toISOString(),
-          analyzedAt: new Date().toISOString()
-        };
-
-        db.prepare(`
-          INSERT INTO merchants (
-            id, business_name, normalized_name, source_platform, source_url,
-            phone, whatsapp, email, instagram_handle, github_url, 
-            facebook_url, tiktok_handle, physical_address,
-            category, dul_number, confidence_score, contactability_score, 
-            myfatoorah_fit_score, evidence_json, contact_validation_json, metadata_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(
-          merchantId, m.businessName, normalizeName(m.businessName), m.platform, m.url,
-          m.phone, m.whatsapp || m.phone, m.email, m.instagramHandle, m.githubUrl,
-          m.facebookUrl, m.tiktokHandle, m.physicalAddress,
-          m.category || keywords.split(' ')[0],
-          m.dulNumber || null, confidenceScore, contactScore, fitScore, JSON.stringify(m.evidence),
-          JSON.stringify(contactValidation),
-          JSON.stringify(metadata)
-        );
-
-        const leadId = uuidv4();
-
-        db.prepare(`
-          INSERT INTO leads (id, merchant_id, run_id, status)
-          VALUES (?, ?, ?, 'NEW')
-        `).run(leadId, merchantId, runId);
-
-        newLeadsCount++;
-        finalMerchants.push({ 
-          ...m, 
-          id: merchantId, 
-          status: 'NEW',
-          contactValidation,
-          confidenceScore,
-          contactScore,
-          fitScore,
-          ...metadata
-        });
-      }
-    }
-
-    db.prepare(`
-      INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, 'scraper', finalMerchants.length, newLeadsCount, 'COMPLETED');
-
-    logger.info('hunt_completed', { runId, newLeadsCount });
-    return { runId, merchants: finalMerchants, newLeadsCount };
-
+    return await withTimeout(
+      runHunt(params, runId, onProgress),
+      HARD_DEADLINE_MS,
+      'hunt'
+    );
   } catch (error: any) {
     logger.error('hunt_failed', { runId, error: error.message });
-    db.prepare(`
-      INSERT INTO search_runs (id, query, source, status, error_message)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(runId, `${keywords} ${location}`, 'scraper', 'FAILED', error.message);
-    throw error;
+    try {
+      db.prepare(
+        `INSERT INTO search_runs (id, query, source, status, error_message) VALUES (?, ?, ?, ?, ?)`
+      ).run(runId, `${keywords} ${location}`, 'scraper', 'FAILED', error.message);
+    } catch {}
+    // Surface a graceful empty result rather than a 500 — the UI can show "no results"
+    return { runId, merchants: [], newLeadsCount: 0, error: error.message };
   }
+}
+
+async function runHunt(
+  params: SearchParams,
+  runId: string,
+  onProgress?: (count: number, stage?: string) => void
+) {
+  const { keywords, location, maxResults = 15 } = params;
+
+  // Build compact, targeted query variations
+  const isUAE = /dubai|uae|emirates|abu\s*dhabi|sharjah|ajman|fujairah|khaimah/i.test(
+    location
+  );
+
+  const queries: string[] = [
+    `${keywords} ${location} instagram OR tiktok OR whatsapp contact`,
+    `${keywords} ${location} shop online "whatsapp"`,
+    `${keywords} ${location} site:instagram.com`,
+  ];
+
+  // Run all searches in parallel
+  const searchStart = Date.now();
+  const searchResults = await Promise.allSettled(
+    queries.map(q => webSearch(q))
+  );
+
+  const raw: SearchResult[] = [];
+  for (const r of searchResults) {
+    if (r.status === 'fulfilled') raw.push(...r.value);
+  }
+
+  // InvestInDubai enrichment (only if UAE)
+  if (isUAE) {
+    try {
+      const dubai = await withTimeout(
+        scrapeInvestInDubai(keywords, 10),
+        10_000,
+        'investindubai'
+      );
+      for (const r of dubai) {
+        raw.push({
+          url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
+            r.businessName
+          )}`,
+          title: r.businessName,
+          description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
+          businessName: r.businessName,
+          category: r.category,
+          dulNumber: r.dulNumber,
+          isInvestInDubai: true,
+        });
+      }
+    } catch (e: any) {
+      logger.debug('investindubai_skipped', { error: e.message });
+    }
+  }
+
+  logger.info('hunt_search_done', {
+    runId,
+    rawCount: raw.length,
+    elapsedMs: Date.now() - searchStart,
+  });
+
+  // Dedupe by URL, keep top maxResults*2 candidates for enrichment
+  const seen = new Set<string>();
+  const candidates: SearchResult[] = [];
+  for (const r of raw) {
+    if (!r.url || seen.has(r.url)) continue;
+    // Skip obvious directory aggregator noise we don't want to enrich
+    if (/^(https?:\/\/)?(www\.)?(google|wikipedia|youtube)\./i.test(r.url)) continue;
+    seen.add(r.url);
+    candidates.push(r);
+    if (candidates.length >= maxResults * 2) break;
+  }
+
+  onProgress?.(0, 'enriching');
+
+  // Build base merchants
+  const baseMerchants = candidates.map(result => {
+    const title = result.title || '';
+    const snippet = result.description || '';
+    const businessName =
+      result.businessName || title.split(/[\|\-\(]/)[0].trim() || '';
+
+    let platform = 'website';
+    if (result.isInvestInDubai) platform = 'invest_in_dubai';
+    else if (result.url.includes('instagram.com')) platform = 'instagram';
+    else if (result.url.includes('facebook.com')) platform = 'facebook';
+    else if (result.url.includes('tiktok.com')) platform = 'tiktok';
+    else if (result.url.includes('t.me')) platform = 'telegram';
+
+    let instagramHandle: string | null = null;
+    if (platform === 'instagram') {
+      const m = result.url.match(/instagram\.com\/([^\/\?]+)/);
+      if (m) instagramHandle = m[1];
+    }
+
+    const phoneMatch = snippet.match(PHONE_RE);
+    const phone = phoneMatch ? phoneMatch[0].replace(/[\s\-]/g, '') : null;
+
+    const emailMatch = snippet.match(EMAIL_RE);
+    const email = emailMatch ? emailMatch[0] : null;
+
+    return {
+      businessName,
+      platform,
+      url: result.url,
+      website: platform === 'website' ? result.url : null,
+      instagramHandle,
+      phone,
+      whatsapp: phone,
+      email,
+      category: result.category || keywords.split(' ')[0],
+      evidence: [snippet].filter(Boolean),
+      dulNumber: result.dulNumber || null,
+      facebookUrl: null,
+      tiktokHandle: null,
+      physicalAddress: null,
+    };
+  }).filter(m => m.businessName && m.businessName.length >= 2);
+
+  // Enrich in parallel with concurrency 4 — tight per-merchant timeout via safeFetch
+  let enrichedCount = 0;
+  const enriched = await mapLimit(baseMerchants, 4, async (m) => {
+    const result = await enrichMerchantContacts(m);
+    enrichedCount++;
+    onProgress?.(enrichedCount, 'enriching');
+    return result;
+  });
+
+  // Persist — filter out dupes, cap at maxResults
+  const finalMerchants: any[] = [];
+  let newLeadsCount = 0;
+
+  for (const m of enriched) {
+    if (!m) continue;
+    if (finalMerchants.length >= maxResults) break;
+
+    const dupCheck = checkDuplicate(m);
+    if (dupCheck.isDuplicate) continue;
+
+    const merchantId = uuidv4();
+    const fitScore = computeFitScore(m.platform, m.followers || 0);
+    const contactScore = computeContactScore(m);
+    const confidenceScore = computeConfidence(m);
+    const contactValidation = m.contactValidation || {
+      status: m.phone || m.email ? 'VERIFIED' : 'UNVERIFIED',
+      sources: ['Scraper', m.platform],
+    };
+
+    // Apify-grade qualification signals — COD shops with no gateway are prime targets
+    const isCod = Boolean((m as any).isCOD);
+    const hasGateway = Boolean((m as any).hasGateway);
+    const paymentMethods: string[] = (m as any).paymentMethods || [];
+    // Fit-score boost: COD-only merchants without a gateway are bullseye for MyFatoorah
+    const qualifiedBoost = isCod && !hasGateway ? 20 : (isCod ? 10 : 0);
+    const gatewayPenalty = hasGateway ? 15 : 0;
+    const adjustedFitScore = Math.max(
+      0,
+      Math.min(100, fitScore + qualifiedBoost - gatewayPenalty)
+    );
+
+    const metadata = {
+      risk: {
+        score: 20,
+        category: 'LOW',
+        emoji: '🛡️',
+        color: 'emerald',
+        factors: ['New discovery'],
+      },
+      scripts: { arabic: '', english: '', whatsapp: '', instagram: '' },
+      revenue: { monthly: 0, annual: 0 },
+      pricing: { setupFee: 0, transactionRate: '2.5%', settlementCycle: 'T+1' },
+      roi: {
+        feeSavings: 0,
+        bnplUplift: 0,
+        cashFlowGain: 0,
+        totalMonthlyGain: 0,
+        annualImpact: 0,
+      },
+      paymentMethods,
+      isCOD: isCod,
+      hasGateway,
+      codEvidence: (m as any).codEvidence || [],
+      otherProfiles: [],
+      foundDate: new Date().toISOString(),
+      analyzedAt: new Date().toISOString(),
+    };
+
+    try {
+      db.prepare(`
+        INSERT INTO merchants (
+          id, business_name, normalized_name, source_platform, source_url,
+          phone, whatsapp, email, instagram_handle, github_url,
+          facebook_url, tiktok_handle, physical_address,
+          category, dul_number, confidence_score, contactability_score,
+          myfatoorah_fit_score, evidence_json, contact_validation_json, metadata_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        merchantId,
+        m.businessName,
+        normalizeName(m.businessName),
+        m.platform,
+        m.url,
+        m.phone,
+        m.whatsapp || m.phone,
+        m.email,
+        m.instagramHandle,
+        (m as any).githubUrl || null,
+        m.facebookUrl,
+        m.tiktokHandle,
+        m.physicalAddress,
+        m.category || keywords.split(' ')[0],
+        m.dulNumber || null,
+        confidenceScore,
+        contactScore,
+        adjustedFitScore,
+        JSON.stringify(m.evidence || []),
+        JSON.stringify(contactValidation),
+        JSON.stringify(metadata)
+      );
+
+      const leadId = uuidv4();
+      db.prepare(
+        `INSERT INTO leads (id, merchant_id, run_id, status) VALUES (?, ?, ?, 'NEW')`
+      ).run(leadId, merchantId, runId);
+
+      newLeadsCount++;
+      finalMerchants.push({
+        ...m,
+        id: merchantId,
+        status: 'NEW',
+        contactValidation,
+        confidenceScore,
+        contactScore,
+        fitScore: adjustedFitScore,
+        ...metadata,
+      });
+      onProgress?.(finalMerchants.length, 'saving');
+    } catch (e: any) {
+      logger.warn('merchant_insert_failed', { name: m.businessName, error: e.message });
+    }
+  }
+
+  db.prepare(
+    `INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(
+    runId,
+    `${keywords} ${location}`,
+    'scraper',
+    finalMerchants.length,
+    newLeadsCount,
+    'COMPLETED'
+  );
+
+  logger.info('hunt_completed', { runId, newLeadsCount, finalCount: finalMerchants.length });
+  return { runId, merchants: finalMerchants, newLeadsCount };
 }

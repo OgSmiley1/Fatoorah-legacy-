@@ -164,12 +164,16 @@ async function startServer() {
   app.post("/api/search", async (req, res) => {
     const { keywords, location, maxResults } = req.body;
     try {
+      io.emit('hunt-started', { query: keywords });
       const result = await huntMerchants(
         { keywords, location, maxResults },
-        (count: number) => io.emit('hunt-progress', { query: keywords, count })
+        (count: number, stage?: string) =>
+          io.emit('hunt-progress', { query: keywords, count, stage: stage || 'searching' })
       );
+      io.emit('hunt-completed', { query: keywords, merchants: result.merchants });
       res.json(result);
     } catch (error: any) {
+      io.emit('hunt-error', { query: keywords, error: error.message });
       res.status(500).json({ error: error.message });
     }
   });
