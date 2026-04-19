@@ -141,38 +141,19 @@ export const HunterDashboard: React.FC = () => {
   const handleSearch = async (overrideKeywords?: string) => {
     const searchKeywords = overrideKeywords || params.keywords;
     if (!searchKeywords) return;
-    
+
     setLoading(true);
+    setSearchProgress({ query: searchKeywords, count: 0 });
+    setMerchants([]);
+
     try {
-      const searchParams = overrideKeywords 
+      const searchParams = overrideKeywords
         ? { ...params, keywords: overrideKeywords }
         : params;
 
-      let results: Merchant[] = [];
-      
-      // Strategy 1: Client-side AI Search (Resilient & Grounded)
-      console.log("Starting AI Search...");
-      const aiResults = await geminiService.aiSearchMerchants(searchParams);
-      
-      if (aiResults.length > 0) {
-        console.log(`AI found ${aiResults.length} merchants. Ingesting...`);
-        const ingestResult = await geminiService.ingestMerchants(aiResults, searchKeywords, params.location);
-        results = ingestResult.merchants;
-      }
-
-      // Strategy 2: Fallback to Server-side Scraper if AI found too few
-      if (results.length < (params.maxResults || 10) / 2) {
-        console.log("Falling back to server-side scraper...");
-        const scraperResults = await geminiService.searchMerchants(searchParams);
-        // Merge results, avoiding duplicates
-        const seenIds = new Set(results.map(r => r.id));
-        const newScraperResults = scraperResults.filter(r => !seenIds.has(r.id));
-        results = [...results, ...newScraperResults];
-      }
-
+      const results = await geminiService.searchMerchants(searchParams);
       setMerchants(results);
-      
-      // Save to history
+
       saveSearch({
         sessionId: Math.random().toString(36).substr(2, 9),
         query: searchKeywords,
@@ -180,13 +161,13 @@ export const HunterDashboard: React.FC = () => {
         category: params.categories.join(', '),
         resultsCount: results.length
       });
-      
+
       refreshStats();
-      
+
       if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', { 
-          merchants: results, 
-          query: searchKeywords 
+        socketRef.current.emit('hunt-finished', {
+          merchants: results,
+          query: searchKeywords
         });
       }
     } catch (e) {
@@ -195,6 +176,7 @@ export const HunterDashboard: React.FC = () => {
       setTimeout(() => setTgStatus('idle'), 5000);
     } finally {
       setLoading(false);
+      setSearchProgress(null);
     }
   };
 
