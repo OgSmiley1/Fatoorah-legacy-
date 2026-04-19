@@ -263,6 +263,14 @@ export const HunterDashboard: React.FC = () => {
               <Download size={18} />
               <span className="hidden sm:inline">Export Pipeline</span>
             </button>
+            <a
+              href="/api/export/merchants.csv"
+              className="mission-control-button mission-control-button-secondary"
+              title="Apify-style dataset export — CSV of every merchant in the database"
+            >
+              <Download size={18} />
+              <span className="hidden sm:inline">Dataset CSV</span>
+            </a>
           </div>
         </div>
       </header>
