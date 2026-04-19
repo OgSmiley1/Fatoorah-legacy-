@@ -140,17 +140,20 @@ export const HunterDashboard: React.FC = () => {
   const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
 
   const handleSearch = async (overrideKeywords?: string) => {
-    const searchKeywords = overrideKeywords || params.keywords;
-    if (!searchKeywords) return;
+    const typed = (overrideKeywords || params.keywords || '').trim();
+    const auto = [
+      params.categories.join(' '),
+      params.subCategories.join(' '),
+      'shop OR boutique OR store',
+    ].filter(Boolean).join(' ').trim();
+    const searchKeywords = typed || auto || 'online shop UAE boutique';
 
     setLoading(true);
     setSearchProgress({ query: searchKeywords, count: 0 });
     setMerchants([]);
 
     try {
-      const searchParams = overrideKeywords
-        ? { ...params, keywords: overrideKeywords }
-        : params;
+      const searchParams = { ...params, keywords: searchKeywords };
 
       const results = await geminiService.searchMerchants(searchParams);
       setMerchants(results);
@@ -476,7 +479,7 @@ export const HunterDashboard: React.FC = () => {
                     onChange={e => setParams({ ...params, keywords: e.target.value })}
                     onKeyDown={e => e.key === 'Enter' && handleSearch()}
                     className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
-                    placeholder="Search niche (e.g. Luxury Abayas, Perfume Brands)"
+                    placeholder="Optional — leave empty to use sidebar filters"
                   />
                 </div>
                 <div className="w-full md:w-64 relative">

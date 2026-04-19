@@ -428,20 +428,21 @@ async function runHunt(
   runId: string,
   onProgress?: (count: number, stage?: string) => void
 ) {
-  const { keywords, location, maxResults = 25, onlyQualified = true } = params;
+  const { location, maxResults = 25, onlyQualified = true } = params;
+  // Use provided keywords or fall back to broad UAE merchant terms so Hunt works with empty input
+  const kw = (params.keywords || '').trim() || 'boutique shop store brand';
 
   const isUAE = /dubai|uae|emirates|abu\s*dhabi|sharjah|ajman|fujairah|khaimah/i.test(
     location
   );
 
-  // Query mix tilted toward MyFatoorah-prospect merchants: cash-on-delivery,
-  // whatsapp-based ordering, instagram shops, small-biz w/o gateways.
+  // Queries target merchants who sell via COD/WhatsApp/Instagram DM — prime MyFatoorah candidates.
   const queries: string[] = [
-    `${keywords} ${location} "cash on delivery" OR "pay on delivery" whatsapp`,
-    `${keywords} ${location} site:instagram.com shop order dm`,
-    `${keywords} ${location} "order on whatsapp" OR "whatsapp to order"`,
-    `${keywords} ${location} small business instagram shop contact`,
-    `${keywords} ${location} cod "bank transfer" OR "cash" order`,
+    `${kw} ${location} "cash on delivery" OR "pay on delivery" whatsapp`,
+    `${kw} ${location} site:instagram.com "dm to order" OR "whatsapp to order"`,
+    `${kw} ${location} "order on whatsapp" OR "bank transfer" buy online`,
+    `${kw} ${location} instagram shop small business cod contact`,
+    `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
   ];
 
   // Run all searches in parallel across 7 engines (see webSearch)
@@ -468,9 +469,9 @@ async function runHunt(
   // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
   if (isUAE) {
     const govSources = await Promise.allSettled([
-      withTimeout(scrapeInvestInDubai(keywords, 10), 10_000, 'investindubai'),
+      withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
       withTimeout(
-        searchNominatim({ query: `${keywords} ${location}`, countryCode: 'ae', limit: 15 }),
+        searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
         9_000,
         'nominatim'
       ),
@@ -581,7 +582,7 @@ async function runHunt(
       phone,
       whatsapp: phone,
       email,
-      category: result.category || keywords.split(' ')[0],
+      category: result.category || kw.split(' ')[0],
       evidence: [snippet].filter(Boolean),
       dulNumber: result.dulNumber || null,
       facebookUrl: null,
@@ -750,7 +751,7 @@ async function runHunt(
         m.facebookUrl,
         m.tiktokHandle,
         m.physicalAddress,
-        m.category || keywords.split(' ')[0],
+        m.category || kw.split(' ')[0],
         m.dulNumber || null,
         confidenceScore,
         contactScore,
@@ -787,7 +788,7 @@ async function runHunt(
     `INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status) VALUES (?, ?, ?, ?, ?, ?)`
   ).run(
     runId,
-    `${keywords} ${location}`,
+    `${kw} ${location}`,
     'scraper',
     finalMerchants.length,
     newLeadsCount,
