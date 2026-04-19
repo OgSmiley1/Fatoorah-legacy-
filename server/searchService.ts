@@ -21,6 +21,19 @@ import {
 import { extractJsonLd, extractMeta } from './actors/jsonLdExtractor';
 import { searchNominatim } from './actors/nominatimActor';
 import { parseInstagramHtml } from './actors/instagramActor';
+import { braveSearch } from './actors/braveSearch';
+import { startpageSearch } from './actors/startpageSearch';
+import { mojeekSearch } from './actors/mojeekSearch';
+import { searxSearch } from './actors/searxMetaSearch';
+import { verifyEmail } from './actors/emailVerifier';
+import { verifyWhatsApp } from './actors/whatsappVerifier';
+import {
+  buildConsensus,
+  identityKey,
+  type RawLead,
+  type SourceLabel,
+  type ConsensusLead,
+} from './verificationService';
 
 // Re-export pure helpers so existing callers & tests keep working
 export {
@@ -99,37 +112,54 @@ async function ddgLibrarySearch(query: string): Promise<SearchResult[]> {
   }
 }
 
-// Primary search: try DDG HTML, then Bing, then DDG library — merge all
-async function webSearch(query: string): Promise<SearchResult[]> {
-  // Run all three engines in parallel so the slowest doesn't gate the others
-  const settled = await Promise.allSettled([
-    ddgHtmlSearch(query),
-    bingHtmlSearch(query),
-    ddgLibrarySearch(query),
-  ]);
+// Each SearchResult is tagged with the set of engines that returned it.
+// When the same URL surfaces on >=2 engines that is itself a verification signal.
+export interface TaggedResult extends SearchResult {
+  sources: SourceLabel[];
+}
 
-  const merged: SearchResult[] = [];
-  for (const s of settled) {
-    if (s.status === 'fulfilled') merged.push(...s.value);
-  }
+// Primary search: run 7 keyless engines in parallel, merge by URL, tag with sources.
+async function webSearch(query: string): Promise<TaggedResult[]> {
+  const engines: { label: SourceLabel; fn: () => Promise<SearchResult[]> }[] = [
+    { label: 'ddg',       fn: () => ddgHtmlSearch(query) },
+    { label: 'bing',      fn: () => bingHtmlSearch(query) },
+    { label: 'ddg-lib',   fn: () => ddgLibrarySearch(query) },
+    { label: 'brave',     fn: () => braveSearch(query) },
+    { label: 'startpage', fn: () => startpageSearch(query) },
+    { label: 'mojeek',    fn: () => mojeekSearch(query) },
+    { label: 'searx',     fn: () => searxSearch(query) },
+  ];
 
-  // Dedupe by URL
-  const seen = new Set<string>();
-  const out: SearchResult[] = [];
-  for (const r of merged) {
-    if (!r.url || seen.has(r.url)) continue;
-    seen.add(r.url);
-    out.push(r);
-  }
+  const settled = await Promise.allSettled(engines.map(e => e.fn()));
 
-  logger.debug('web_search_done', {
-    query,
-    ddg: settled[0].status === 'fulfilled' ? settled[0].value.length : 0,
-    bing: settled[1].status === 'fulfilled' ? settled[1].value.length : 0,
-    ddgLib: settled[2].status === 'fulfilled' ? settled[2].value.length : 0,
-    merged: out.length,
+  const byUrl = new Map<string, TaggedResult>();
+  settled.forEach((s, i) => {
+    if (s.status !== 'fulfilled') return;
+    for (const r of s.value) {
+      if (!r.url || !r.url.startsWith('http')) continue;
+      const existing = byUrl.get(r.url);
+      if (existing) {
+        if (!existing.sources.includes(engines[i].label)) {
+          existing.sources.push(engines[i].label);
+        }
+      } else {
+        byUrl.set(r.url, { ...r, sources: [engines[i].label] });
+      }
+    }
   });
-  return out;
+
+  const perEngine: Record<string, number> = {};
+  engines.forEach((e, i) => {
+    perEngine[e.label] = settled[i].status === 'fulfilled'
+      ? (settled[i] as PromiseFulfilledResult<SearchResult[]>).value.length
+      : 0;
+  });
+  logger.debug('multi_engine_search_done', {
+    query,
+    perEngine,
+    unique: byUrl.size,
+  });
+  return Array.from(byUrl.values());
 }
 
 // Fetch root + /contact in parallel — tight timeout
@@ -341,9 +371,9 @@ export async function huntMerchants(
   params: SearchParams,
   onProgress?: (count: number, stage?: string) => void
 ) {
-  const { keywords, location, maxResults = 15 } = params;
+  const { keywords, location, maxResults = 25 } = params;
   const runId = uuidv4();
-  const HARD_DEADLINE_MS = 75_000;
+  const HARD_DEADLINE_MS = 90_000;
 
   logger.info('hunt_started', { runId, keywords, location, maxResults });
   onProgress?.(0, 'searching');
@@ -371,28 +401,40 @@ async function runHunt(
   runId: string,
   onProgress?: (count: number, stage?: string) => void
 ) {
-  const { keywords, location, maxResults = 15 } = params;
+  const { keywords, location, maxResults = 25 } = params;
 
-  // Build compact, targeted query variations
   const isUAE = /dubai|uae|emirates|abu\s*dhabi|sharjah|ajman|fujairah|khaimah/i.test(
     location
   );
 
+  // Wider query mix so engines have more to cross-confirm
   const queries: string[] = [
     `${keywords} ${location} instagram OR tiktok OR whatsapp contact`,
     `${keywords} ${location} shop online "whatsapp"`,
     `${keywords} ${location} site:instagram.com`,
+    `${keywords} ${location} "cash on delivery" OR "pay on delivery"`,
+    `${keywords} ${location} contact phone email`,
   ];
 
-  // Run all searches in parallel
+  // Run all searches in parallel across 7 engines (see webSearch)
   const searchStart = Date.now();
-  const searchResults = await Promise.allSettled(
-    queries.map(q => webSearch(q))
-  );
+  const searchResults = await Promise.allSettled(queries.map((q) => webSearch(q)));
 
-  const raw: SearchResult[] = [];
+  // Global URL → sources map: if same URL hits from multiple engines, that is a vote
+  const urlVotes = new Map<string, TaggedResult>();
   for (const r of searchResults) {
-    if (r.status === 'fulfilled') raw.push(...r.value);
+    if (r.status !== 'fulfilled') continue;
+    for (const tr of r.value) {
+      if (!tr.url) continue;
+      const existing = urlVotes.get(tr.url);
+      if (existing) {
+        for (const s of tr.sources) {
+          if (!existing.sources.includes(s)) existing.sources.push(s);
+        }
+      } else {
+        urlVotes.set(tr.url, { ...tr, sources: [...tr.sources] });
+      }
+    }
   }
 
   // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
@@ -408,17 +450,27 @@ async function runHunt(
 
     if (govSources[0].status === 'fulfilled') {
       for (const r of govSources[0].value) {
-        raw.push({
-          url: `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
-            r.businessName
-          )}`,
-          title: r.businessName,
-          description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
-          businessName: r.businessName,
-          category: r.category,
-          dulNumber: r.dulNumber,
-          isInvestInDubai: true,
-        });
+        const url = `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
+          r.businessName
+        )}`;
+        const existing = urlVotes.get(url);
+        if (existing) {
+          if (!existing.sources.includes('invest-in-dubai')) existing.sources.push('invest-in-dubai');
+          existing.businessName = existing.businessName || r.businessName;
+          existing.dulNumber = existing.dulNumber || r.dulNumber;
+          existing.category = existing.category || r.category;
+        } else {
+          urlVotes.set(url, {
+            url,
+            title: r.businessName,
+            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
+            businessName: r.businessName,
+            category: r.category,
+            dulNumber: r.dulNumber,
+            isInvestInDubai: true,
+            sources: ['invest-in-dubai'],
+          });
+        }
       }
     } else {
       logger.debug('investindubai_skipped', { error: (govSources[0] as any).reason?.message });
@@ -426,15 +478,20 @@ async function runHunt(
 
     if (govSources[1].status === 'fulfilled') {
       for (const p of govSources[1].value) {
-        const url = p.website ||
-          `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
-        raw.push({
-          url,
-          title: p.name,
-          description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
-          businessName: p.name,
-          category: p.category,
-        });
+        const url = p.website || `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
+        const existing = urlVotes.get(url);
+        if (existing) {
+          if (!existing.sources.includes('nominatim')) existing.sources.push('nominatim');
+        } else {
+          urlVotes.set(url, {
+            url,
+            title: p.name,
+            description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
+            businessName: p.name,
+            category: p.category,
+            sources: ['nominatim'],
+          });
+        }
       }
     } else {
       logger.debug('nominatim_skipped', { error: (govSources[1] as any).reason?.message });
@@ -443,25 +500,25 @@ async function runHunt(
 
   logger.info('hunt_search_done', {
     runId,
-    rawCount: raw.length,
+    rawCount: urlVotes.size,
     elapsedMs: Date.now() - searchStart,
   });
 
-  // Dedupe by URL, keep top maxResults*2 candidates for enrichment
-  const seen = new Set<string>();
-  const candidates: SearchResult[] = [];
-  for (const r of raw) {
-    if (!r.url || seen.has(r.url)) continue;
-    // Skip obvious directory aggregator noise we don't want to enrich
+  // Build candidate list, drop noise, keep top 3x maxResults so the verifier
+  // has plenty to winnow down from.
+  const candidates: TaggedResult[] = [];
+  for (const r of urlVotes.values()) {
+    if (!r.url) continue;
     if (/^(https?:\/\/)?(www\.)?(google|wikipedia|youtube)\./i.test(r.url)) continue;
-    seen.add(r.url);
     candidates.push(r);
-    if (candidates.length >= maxResults * 2) break;
   }
+  // Prefer URLs with more engine votes first — those are already partially verified
+  candidates.sort((a, b) => b.sources.length - a.sources.length);
+  candidates.splice(maxResults * 3);
 
   onProgress?.(0, 'enriching');
 
-  // Build base merchants
+  // Build base merchants with their engine-vote sources carried through
   const baseMerchants = candidates.map(result => {
     const title = result.title || '';
     const snippet = result.description || '';
@@ -502,16 +559,70 @@ async function runHunt(
       facebookUrl: null,
       tiktokHandle: null,
       physicalAddress: null,
-    };
+      verifiedSources: [...result.sources] as SourceLabel[],
+    } as any;
   }).filter(m => m.businessName && m.businessName.length >= 2);
 
-  // Enrich in parallel with concurrency 4 — tight per-merchant timeout via safeFetch
+  // Enrich in parallel with concurrency 4 — each path adds its own source vote
   let enrichedCount = 0;
   const enriched = await mapLimit(baseMerchants, 4, async (m) => {
-    const result = await enrichMerchantContacts(m);
+    const enrichedM: any = await enrichMerchantContacts(m);
+    if (!enrichedM.verifiedSources) enrichedM.verifiedSources = m.verifiedSources || [];
+
+    // Each enrichment path contributes an independent source vote
+    if (enrichedM.structuredData) {
+      if (!enrichedM.verifiedSources.includes('json-ld')) enrichedM.verifiedSources.push('json-ld');
+    }
+    if (enrichedM.instagramProfile) {
+      if (!enrichedM.verifiedSources.includes('instagram')) enrichedM.verifiedSources.push('instagram');
+    }
+    if (enrichedM.metaSignals || (enrichedM.structuredData || enrichedM.isCOD || enrichedM.hasGateway)) {
+      if (!enrichedM.verifiedSources.includes('website')) enrichedM.verifiedSources.push('website');
+    }
+
+    // DNS MX check — keyless email deliverability
+    if (enrichedM.email) {
+      try {
+        const ev = await verifyEmail(enrichedM.email, 4000);
+        enrichedM.emailVerification = ev;
+        if (ev.status === 'deliverable' && !enrichedM.verifiedSources.includes('dns-mx')) {
+          enrichedM.verifiedSources.push('dns-mx');
+        }
+      } catch {}
+    }
+
+    // WhatsApp liveness check — keyless HTTP check against wa.me
+    const phoneForWa = enrichedM.whatsapp || enrichedM.phone;
+    if (phoneForWa) {
+      try {
+        const wv = await verifyWhatsApp(phoneForWa, 5000);
+        enrichedM.whatsappVerification = wv;
+        if (wv.status === 'live' && !enrichedM.verifiedSources.includes('whatsapp-live')) {
+          enrichedM.verifiedSources.push('whatsapp-live');
+        }
+      } catch {}
+    }
+
+    // Final cross-source agreement score
+    const uniq: SourceLabel[] = Array.from(new Set<SourceLabel>(enrichedM.verifiedSources));
+    enrichedM.verifiedSources = uniq;
+    enrichedM.agreementScore = uniq.length;
+    enrichedM.verifiedStatus =
+      uniq.length >= 3 ? 'VERIFIED' : uniq.length === 2 ? 'LIKELY' : 'UNVERIFIED';
+
     enrichedCount++;
     onProgress?.(enrichedCount, 'enriching');
-    return result;
+    return enrichedM;
+  });
+
+  // Sort enriched leads: VERIFIED first, then LIKELY, then by agreementScore
+  enriched.sort((a: any, b: any) => {
+    if (!a || !b) return 0;
+    const order: Record<string, number> = { VERIFIED: 0, LIKELY: 1, UNVERIFIED: 2 };
+    const sa = order[a.verifiedStatus || 'UNVERIFIED'];
+    const sb = order[b.verifiedStatus || 'UNVERIFIED'];
+    if (sa !== sb) return sa - sb;
+    return (b.agreementScore || 0) - (a.agreementScore || 0);
   });
 
   // Persist — filter out dupes, cap at maxResults
@@ -568,6 +679,12 @@ async function runHunt(
       isCOD: isCod,
       hasGateway,
       codEvidence: (m as any).codEvidence || [],
+      // Multi-source verification signals
+      verifiedStatus: (m as any).verifiedStatus || 'UNVERIFIED',
+      agreementScore: (m as any).agreementScore || 0,
+      verifiedSources: (m as any).verifiedSources || [],
+      emailVerification: (m as any).emailVerification || null,
+      whatsappVerification: (m as any).whatsappVerification || null,
       otherProfiles: [],
       foundDate: new Date().toISOString(),
       analyzedAt: new Date().toISOString(),
