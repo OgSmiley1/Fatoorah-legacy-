@@ -2,7 +2,7 @@ import React from 'react';
 import {
   Search, MapPin, Filter, Loader2, Download, Save, Shield,
   Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send, Sparkles, MessageCircle, ScanLine
+  X, TrendingUp, Send, Sparkles, MessageCircle, ScanLine, ShoppingCart
 } from 'lucide-react';
 import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
 import { geminiService } from '../services/geminiService';
@@ -13,6 +13,8 @@ import { TelegramModal } from './TelegramModal';
 import { WhatsAppModal } from './WhatsAppModal';
 import { CardScannerModal } from './CardScannerModal';
 import { WizardChat } from './WizardChat';
+import { PaymentLinkHunter } from './PaymentLinkHunter';
+import { POSHunter } from './POSHunter';
 import { telegramService } from '../services/telegramService';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
@@ -82,6 +84,8 @@ export const HunterDashboard: React.FC = () => {
   const [showTelegram, setShowTelegram] = React.useState(false);
   const [showWhatsApp, setShowWhatsApp] = React.useState(false);
   const [showCardScanner, setShowCardScanner] = React.useState(false);
+  const [showPaymentLinkHunter, setShowPaymentLinkHunter] = React.useState(false);
+  const [showPOSHunter, setShowPOSHunter] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const socketRef = React.useRef<Socket | null>(null);
@@ -248,6 +252,22 @@ export const HunterDashboard: React.FC = () => {
             >
               <ScanLine size={18} />
               <span className="hidden sm:inline">Scan Card</span>
+            </button>
+            <button
+              onClick={() => setShowPaymentLinkHunter(true)}
+              className="mission-control-button mission-control-button-secondary"
+              title="Hunt for payment link clients"
+            >
+              <TrendingUp size={18} />
+              <span className="hidden sm:inline">Payment Links</span>
+            </button>
+            <button
+              onClick={() => setShowPOSHunter(true)}
+              className="mission-control-button mission-control-button-secondary"
+              title="Hunt for POS clients"
+            >
+              <ShoppingCart size={18} />
+              <span className="hidden sm:inline">POS Systems</span>
             </button>
             <div className="hidden md:flex items-center gap-6 px-6 border-x border-slate-800">
               <div className="text-center">
@@ -630,6 +650,34 @@ export const HunterDashboard: React.FC = () => {
         onRefreshStats={refreshStats}
         onUpdateStatus={handleUpdateLead}
       />
+
+      <AnimatePresence>
+        {showPaymentLinkHunter && (
+          <PaymentLinkHunter
+            onResultsFound={(merchantResults) => {
+              if (merchantResults.length > 0) {
+                setMerchants(merchantResults);
+                refreshStats();
+              }
+            }}
+            onClose={() => setShowPaymentLinkHunter(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showPOSHunter && (
+          <POSHunter
+            onResultsFound={(merchantResults) => {
+              if (merchantResults.length > 0) {
+                setMerchants(merchantResults);
+                refreshStats();
+              }
+            }}
+            onClose={() => setShowPOSHunter(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };
