@@ -26,6 +26,7 @@ import { startpageSearch } from './actors/startpageSearch';
 import { mojeekSearch } from './actors/mojeekSearch';
 import { searxSearch } from './actors/searxMetaSearch';
 import { serperSearch } from './actors/serperSearch';
+import { serpapiSearch } from './actors/serpapiSearch';
 import { verifyEmail } from './actors/emailVerifier';
 import { verifyWhatsApp } from './actors/whatsappVerifier';
 import {
@@ -119,8 +120,11 @@ export interface TaggedResult extends SearchResult {
   sources: SourceLabel[];
 }
 
-// Primary search: run up to 8 engines in parallel (7 keyless + Serper/Google if key set).
-// Serper is silently skipped when SERPER_API_KEY is absent.
+// Primary search: run up to 9 engines in parallel
+// (7 keyless + Serper/Google + SerpApi/Google).
+// Both Google APIs are skipped when their keys aren't configured.
+// SerpApi uses the cheaper `google_light` engine and caches per query
+// to keep credits low on the 100/month free tier.
 async function webSearch(query: string): Promise<TaggedResult[]> {
   const engines: { label: SourceLabel; fn: () => Promise<SearchResult[]> }[] = [
     { label: 'ddg',       fn: () => ddgHtmlSearch(query) },
@@ -131,6 +135,7 @@ async function webSearch(query: string): Promise<TaggedResult[]> {
     { label: 'mojeek',    fn: () => mojeekSearch(query) },
     { label: 'searx',     fn: () => searxSearch(query) },
     { label: 'serper',    fn: () => serperSearch(query) },
+    { label: 'serpapi',   fn: () => serpapiSearch(query) },
   ];
 
   const settled = await Promise.allSettled(engines.map(e => e.fn()));
