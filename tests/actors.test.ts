@@ -117,73 +117,76 @@ describe('extractMeta', () => {
   });
 });
 
-// ---------- Nominatim ----------
+// ---------- HERE Geocoding (parseNominatim) ----------
 
-const NOMINATIM_RAW = [
-  {
-    osm_type: 'node',
-    osm_id: 12345,
-    lat: '25.197197',
-    lon: '55.274376',
-    class: 'shop',
-    type: 'clothes',
-    name: 'Abaya Boutique DXB',
-    display_name: 'Abaya Boutique DXB, Sheikh Zayed Rd, Dubai, 00000, UAE',
-    address: {
-      road: 'Sheikh Zayed Rd',
-      city: 'Dubai',
-      state: 'Dubai',
-      country: 'United Arab Emirates',
-      country_code: 'ae',
-      postcode: '00000',
+const HERE_RAW = {
+  items: [
+    {
+      title: 'Abaya Boutique DXB',
+      id: 'here:pds:place:ae:001',
+      resultType: 'place',
+      address: {
+        label: 'Abaya Boutique DXB, Sheikh Zayed Rd, Dubai, 00000, UAE',
+        countryCode: 'ARE',
+        countryName: 'United Arab Emirates',
+        state: 'Dubai',
+        city: 'Dubai',
+        street: 'Sheikh Zayed Rd',
+        postalCode: '00000',
+      },
+      position: { lat: 25.197197, lng: 55.274376 },
+      categories: [{ id: '400-4100-0045', name: 'Clothing', primary: true }],
+      contacts: [
+        {
+          phone: [{ value: '+971 4 123 4567' }],
+          www: [{ value: 'https://abaya-boutique.ae' }],
+        },
+      ],
     },
-    extratags: {
-      phone: '+971 4 123 4567',
-      website: 'https://abaya-boutique.ae',
+    {
+      // missing position — must be filtered out
+      title: 'Broken Place',
+      id: 'here:pds:place:ae:002',
+      resultType: 'place',
+      address: { label: 'Broken Place, Dubai, UAE' },
     },
-  },
-  {
-    // missing lat/lon — must be filtered out
-    osm_type: 'way',
-    osm_id: 67890,
-    name: 'Broken Place',
-    class: 'amenity',
-    type: 'cafe',
-  },
-  {
-    osm_type: 'node',
-    osm_id: 222,
-    lat: '24.4539',
-    lon: '54.3773',
-    class: 'amenity',
-    type: 'restaurant',
-    display_name: 'Arabic Flavors, Abu Dhabi, UAE',
-    address: { town: 'Abu Dhabi', country: 'UAE', country_code: 'ae' },
-    extratags: {},
-  },
-];
+    {
+      title: 'Arabic Flavors',
+      id: 'here:pds:place:ae:003',
+      resultType: 'place',
+      address: {
+        label: 'Arabic Flavors, Abu Dhabi, UAE',
+        countryCode: 'ARE',
+        countryName: 'UAE',
+        city: 'Abu Dhabi',
+      },
+      position: { lat: 24.4539, lng: 54.3773 },
+      categories: [{ id: '100-1000-0000', name: 'Restaurant', primary: true }],
+    },
+  ],
+};
 
 describe('parseNominatim', () => {
-  const places = parseNominatim(NOMINATIM_RAW);
+  const places = parseNominatim(HERE_RAW);
 
   test('keeps only places with valid coordinates', () => {
     expect(places.length).toBe(2);
   });
 
-  test('maps core fields + extratags', () => {
+  test('maps core fields from HERE response', () => {
     const [first] = places;
     expect(first.name).toBe('Abaya Boutique DXB');
-    expect(first.category).toBe('shop:clothes');
+    expect(first.category).toBe('Clothing');
     expect(first.address.city).toBe('Dubai');
-    expect(first.address.countryCode).toBe('ae');
+    expect(first.address.countryCode).toBe('are');
     expect(first.phone).toBe('+971 4 123 4567');
     expect(first.website).toBe('https://abaya-boutique.ae');
   });
 
-  test('falls back to display_name when name missing', () => {
+  test('parses second valid place correctly', () => {
     const [, second] = places;
     expect(second.name).toBe('Arabic Flavors');
-    expect(second.category).toBe('amenity:restaurant');
+    expect(second.category).toBe('Restaurant');
     expect(second.address.city).toBe('Abu Dhabi');
   });
 
