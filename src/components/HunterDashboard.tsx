@@ -658,6 +658,26 @@ export const HunterDashboard: React.FC = () => {
               if (merchantResults.length > 0) {
                 setMerchants(merchantResults);
                 refreshStats();
+
+                // Auto-send to Telegram if enabled
+                const autoSend = localStorage.getItem('sw_tg_autosend') === 'true';
+                if (autoSend) {
+                  const tgToken = localStorage.getItem('sw_tg_token');
+                  const tgChatId = localStorage.getItem('sw_tg_chatid');
+                  if (tgToken && tgChatId) {
+                    setTgStatus('sending');
+                    merchantResults.forEach((merchant, idx) => {
+                      setTimeout(() => {
+                        telegramService.sendMessage(tgToken, tgChatId, merchant).then(ok => {
+                          if (idx === merchantResults.length - 1) {
+                            setTgStatus('success');
+                            setTimeout(() => setTgStatus('idle'), 2000);
+                          }
+                        });
+                      }, idx * 500);
+                    });
+                  }
+                }
               }
             }}
             onClose={() => setShowPaymentLinkHunter(false)}
@@ -672,6 +692,26 @@ export const HunterDashboard: React.FC = () => {
               if (merchantResults.length > 0) {
                 setMerchants(merchantResults);
                 refreshStats();
+
+                // Auto-send to Telegram if enabled
+                const autoSend = localStorage.getItem('sw_tg_autosend') === 'true';
+                if (autoSend) {
+                  const tgToken = localStorage.getItem('sw_tg_token');
+                  const tgChatId = localStorage.getItem('sw_tg_chatid');
+                  if (tgToken && tgChatId) {
+                    setTgStatus('sending');
+                    merchantResults.forEach((merchant, idx) => {
+                      setTimeout(() => {
+                        telegramService.sendMessage(tgToken, tgChatId, merchant).then(ok => {
+                          if (idx === merchantResults.length - 1) {
+                            setTgStatus('success');
+                            setTimeout(() => setTgStatus('idle'), 2000);
+                          }
+                        });
+                      }, idx * 500);
+                    });
+                  }
+                }
               }
             }}
             onClose={() => setShowPOSHunter(false)}
