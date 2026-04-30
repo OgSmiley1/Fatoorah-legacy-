@@ -466,14 +466,14 @@ async function runHunt(
     }
   }
 
-  // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
+  // Run InvestInDubai + HERE Geocoding in parallel — both are UAE-only sources
   if (isUAE) {
     const govSources = await Promise.allSettled([
       withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
       withTimeout(
         searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
         9_000,
-        'nominatim'
+        'here-geocoding'
       ),
     ]);
 
@@ -507,10 +507,10 @@ async function runHunt(
 
     if (govSources[1].status === 'fulfilled') {
       for (const p of govSources[1].value) {
-        const url = p.website || `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
+        const url = p.website || `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(p.displayName)}`;
         const existing = urlVotes.get(url);
         if (existing) {
-          if (!existing.sources.includes('nominatim')) existing.sources.push('nominatim');
+          if (!existing.sources.includes('here-geocoding')) existing.sources.push('here-geocoding');
         } else {
           urlVotes.set(url, {
             url,
@@ -518,12 +518,12 @@ async function runHunt(
             description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
             businessName: p.name,
             category: p.category,
-            sources: ['nominatim'],
+            sources: ['here-geocoding'],
           });
         }
       }
     } else {
-      logger.debug('nominatim_skipped', { error: (govSources[1] as any).reason?.message });
+      logger.debug('here_geocoding_skipped', { error: (govSources[1] as any).reason?.message });
     }
   }
 
