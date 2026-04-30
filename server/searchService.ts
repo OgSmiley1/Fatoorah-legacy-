@@ -2,7 +2,10 @@ import { v4 as uuidv4 } from 'uuid';
 import axios from 'axios';
 import { search as ddgLibSearch } from 'duck-duck-scrape';
 import db from '../db';
-import { checkDuplicate, normalizeName } from './dedupService';
+import { checkDuplicate } from './dedupService';
+import { retrySafe, envInt } from './retry';
+import { metrics } from './metrics';
+import { persistLead } from './persistLead';
 import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
@@ -59,9 +62,12 @@ function getRandomUserAgent() {
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-// --- HTTP helper with tight timeout ---
+// --- HTTP helper with tight timeout + jittered exponential backoff retry ---
+// HUNT_FETCH_RETRIES env var controls retries (default 2 → 3 attempts total).
+const FETCH_RETRIES = envInt('HUNT_FETCH_RETRIES', 2);
+
 async function safeFetch(url: string, timeoutMs = 6000): Promise<string | null> {
-  try {
+  return retrySafe(async () => {
     const res = await axios.get(url, {
       timeout: timeoutMs,
       headers: {
@@ -75,9 +81,17 @@ async function safeFetch(url: string, timeoutMs = 6000): Promise<string | null> 
       transformResponse: [(d) => d],
     });
     return typeof res.data === 'string' ? res.data : null;
-  } catch {
-    return null;
-  }
+  }, {
+    tries: FETCH_RETRIES + 1,
+    baseDelayMs: 300,
+    maxDelayMs: 2500,
+    // Don't retry on hard 4xx — only on network errors / 5xx / timeouts.
+    shouldRetry: (err: any) => {
+      const status = err?.response?.status;
+      if (typeof status === 'number' && status >= 400 && status < 500) return false;
+      return true;
+    },
+  });
 }
 
 // --- DuckDuckGo HTML endpoint (stable, no JS) ---
@@ -403,16 +417,20 @@ export async function huntMerchants(
   const HARD_DEADLINE_MS = 90_000;
 
   logger.info('hunt_started', { runId, keywords, location, maxResults });
+  metrics.huntStarted();
   onProgress?.(0, 'searching');
 
   try {
-    return await withTimeout(
+    const result = await withTimeout(
       runHunt(params, runId, onProgress),
       HARD_DEADLINE_MS,
       'hunt'
     );
+    metrics.huntFinished(runId, result.newLeadsCount);
+    return result;
   } catch (error: any) {
     logger.error('hunt_failed', { runId, error: error.message });
+    metrics.huntFailed(runId, error.message);
     try {
       db.prepare(
         `INSERT INTO search_runs (id, query, source, status, error_message) VALUES (?, ?, ?, ?, ?)`
@@ -592,9 +610,10 @@ async function runHunt(
     } as any;
   }).filter(m => m.businessName && m.businessName.length >= 2);
 
-  // Enrich in parallel with concurrency 4 — each path adds its own source vote
+  // Enrich in parallel — concurrency tunable via HUNT_ENRICH_CONCURRENCY (default 4)
   let enrichedCount = 0;
-  const enriched = await mapLimit(baseMerchants, 4, async (m) => {
+  const ENRICH_CONCURRENCY = Math.max(1, envInt('HUNT_ENRICH_CONCURRENCY', 4));
+  const enriched = await mapLimit(baseMerchants, ENRICH_CONCURRENCY, async (m) => {
     const enrichedM: any = await enrichMerchantContacts(m);
     if (!enrichedM.verifiedSources) enrichedM.verifiedSources = m.verifiedSources || [];
 
@@ -728,49 +747,23 @@ async function runHunt(
       analyzedAt: new Date().toISOString(),
     };
 
-    try {
-      db.prepare(`
-        INSERT INTO merchants (
-          id, business_name, normalized_name, source_platform, source_url,
-          phone, whatsapp, email, instagram_handle, github_url,
-          facebook_url, tiktok_handle, physical_address,
-          category, dul_number, confidence_score, contactability_score,
-          myfatoorah_fit_score, followers, evidence_json, contact_validation_json, metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        merchantId,
-        m.businessName,
-        normalizeName(m.businessName),
-        m.platform,
-        m.url,
-        m.phone,
-        m.whatsapp || m.phone,
-        m.email,
-        m.instagramHandle,
-        (m as any).githubUrl || null,
-        m.facebookUrl,
-        m.tiktokHandle,
-        m.physicalAddress,
-        m.category || kw.split(' ')[0],
-        m.dulNumber || null,
-        confidenceScore,
-        contactScore,
-        adjustedFitScore,
-        typeof m.followers === 'number' && m.followers > 0 ? m.followers : null,
-        JSON.stringify(m.evidence || []),
-        JSON.stringify(contactValidation),
-        JSON.stringify(metadata)
-      );
+    const persisted = persistLead({
+      merchantId,
+      runId,
+      merchant: m,
+      categoryHint: kw.split(' ')[0],
+      confidenceScore,
+      contactScore,
+      fitScore: adjustedFitScore,
+      contactValidation,
+      metadata,
+    });
 
-      const leadId = uuidv4();
-      db.prepare(
-        `INSERT INTO leads (id, merchant_id, run_id, status) VALUES (?, ?, ?, 'NEW')`
-      ).run(leadId, merchantId, runId);
-
+    if (persisted.ok) {
       newLeadsCount++;
       finalMerchants.push({
         ...m,
-        id: merchantId,
+        id: persisted.merchantId,
         status: 'NEW',
         contactValidation,
         confidenceScore,
@@ -779,8 +772,6 @@ async function runHunt(
         ...metadata,
       });
       onProgress?.(finalMerchants.length, 'saving');
-    } catch (e: any) {
-      logger.warn('merchant_insert_failed', { name: m.businessName, error: e.message });
     }
   }
 

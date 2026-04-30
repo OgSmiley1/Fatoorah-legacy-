@@ -12,6 +12,7 @@ import { execSync } from "child_process";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
+import { metrics } from "./server/metrics";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
 // SQLite-backed session store — no memory leaks, survives restarts
@@ -349,7 +350,12 @@ async function startServer() {
       total_leads: db.prepare("SELECT COUNT(*) as count FROM leads").get() as any,
       new_leads: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'NEW'").get() as any,
       onboarded: db.prepare("SELECT COUNT(*) as count FROM leads WHERE status = 'ONBOARDED'").get() as any,
-      recent_runs: db.prepare("SELECT * FROM search_runs ORDER BY created_at DESC LIMIT 5").all()
+      recent_runs: db.prepare("SELECT * FROM search_runs ORDER BY created_at DESC LIMIT 5").all(),
+      runtime: {
+        ...metrics.snapshot(),
+        uptimeSec: Math.round(process.uptime()),
+        nodeMemMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
+      }
     };
     res.json(stats);
   });
