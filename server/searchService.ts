@@ -28,6 +28,8 @@ import { braveSearch } from './actors/braveSearch';
 import { startpageSearch } from './actors/startpageSearch';
 import { mojeekSearch } from './actors/mojeekSearch';
 import { searxSearch } from './actors/searxMetaSearch';
+import { serperSearch } from './actors/serperSearch';
+import { serpapiSearch } from './actors/serpapiSearch';
 import { verifyEmail } from './actors/emailVerifier';
 import { verifyWhatsApp } from './actors/whatsappVerifier';
 import {
@@ -132,7 +134,11 @@ export interface TaggedResult extends SearchResult {
   sources: SourceLabel[];
 }
 
-// Primary search: run 7 keyless engines in parallel, merge by URL, tag with sources.
+// Primary search: run up to 9 engines in parallel
+// (7 keyless + Serper/Google + SerpApi/Google).
+// Both Google APIs are skipped when their keys aren't configured.
+// SerpApi uses the cheaper `google_light` engine and caches per query
+// to keep credits low on the 100/month free tier.
 async function webSearch(query: string): Promise<TaggedResult[]> {
   const engines: { label: SourceLabel; fn: () => Promise<SearchResult[]> }[] = [
     { label: 'ddg',       fn: () => ddgHtmlSearch(query) },
@@ -142,6 +148,8 @@ async function webSearch(query: string): Promise<TaggedResult[]> {
     { label: 'startpage', fn: () => startpageSearch(query) },
     { label: 'mojeek',    fn: () => mojeekSearch(query) },
     { label: 'searx',     fn: () => searxSearch(query) },
+    { label: 'serper',    fn: () => serperSearch(query) },
+    { label: 'serpapi',   fn: () => serpapiSearch(query) },
   ];
 
   const settled = await Promise.allSettled(engines.map(e => e.fn()));
@@ -484,14 +492,14 @@ async function runHunt(
     }
   }
 
-  // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
+  // Run InvestInDubai + HERE Geocoding in parallel — both are UAE-only sources
   if (isUAE) {
     const govSources = await Promise.allSettled([
       withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
       withTimeout(
         searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
         9_000,
-        'nominatim'
+        'here-geocoding'
       ),
     ]);
 
@@ -525,10 +533,10 @@ async function runHunt(
 
     if (govSources[1].status === 'fulfilled') {
       for (const p of govSources[1].value) {
-        const url = p.website || `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
+        const url = p.website || `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(p.displayName)}`;
         const existing = urlVotes.get(url);
         if (existing) {
-          if (!existing.sources.includes('nominatim')) existing.sources.push('nominatim');
+          if (!existing.sources.includes('here-geocoding')) existing.sources.push('here-geocoding');
         } else {
           urlVotes.set(url, {
             url,
@@ -536,12 +544,12 @@ async function runHunt(
             description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
             businessName: p.name,
             category: p.category,
-            sources: ['nominatim'],
+            sources: ['here-geocoding'],
           });
         }
       }
     } else {
-      logger.debug('nominatim_skipped', { error: (govSources[1] as any).reason?.message });
+      logger.debug('here_geocoding_skipped', { error: (govSources[1] as any).reason?.message });
     }
   }
 

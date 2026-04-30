@@ -1,17 +1,18 @@
 // server/actors/nominatimActor.ts
-// OpenStreetMap Nominatim actor — free, no API key, permissive usage policy
-// (<=1 req/s, custom UA required). Returns structured place data: name, category,
-// lat/lon, full display address, and — when available — contact tags (phone,
-// website) from OSM's extratags.
+// HERE Geocoding & Search API actor — replaces OpenStreetMap Nominatim.
+// Returns structured place data: name, category, lat/lon, full display address,
+// and contact info when available.
 //
 // Pure parser is exported separately so tests don't hit the network.
 
 import axios from 'axios';
 import { logger } from '../logger';
 
+const HERE_API_KEY = '94BvpsaPaMq4aH6kUvTlbApyAV68BWw_s8sqh60d-u4';
+
 export interface NominatimPlace {
   name: string;
-  category: string;          // OSM class:type pair, e.g. "shop:clothes"
+  category: string;
   displayName: string;
   lat: number;
   lon: number;
@@ -30,50 +31,83 @@ export interface NominatimPlace {
   osmId: number;
 }
 
-// Pure parser — exported for unit tests. Accepts the raw Nominatim JSON array.
-export function parseNominatim(raw: any[]): NominatimPlace[] {
-  if (!Array.isArray(raw)) return [];
-  const out: NominatimPlace[] = [];
-  for (const r of raw) {
-    if (!r || typeof r !== 'object') continue;
-    const lat = Number(r.lat);
-    const lon = Number(r.lon);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+interface HereItem {
+  title?: string;
+  id?: string;
+  resultType?: string;
+  houseNumberType?: string;
+  address?: {
+    label?: string;
+    countryCode?: string;
+    countryName?: string;
+    state?: string;
+    county?: string;
+    city?: string;
+    district?: string;
+    street?: string;
+    postalCode?: string;
+    houseNumber?: string;
+  };
+  position?: {
+    lat: number;
+    lng: number;
+  };
+  categories?: { id: string; name: string; primary?: boolean }[];
+  contacts?: {
+    phone?: { value: string }[];
+    www?: { value: string }[];
+  }[];
+}
 
-    const extratags = (r.extratags && typeof r.extratags === 'object') ? r.extratags : {};
-    const addr = (r.address && typeof r.address === 'object') ? r.address : {};
+// Pure parser — exported for unit tests. Accepts the raw HERE geocode JSON response.
+export function parseNominatim(raw: any): NominatimPlace[] {
+  const items: HereItem[] = Array.isArray(raw?.items) ? raw.items : [];
+  const out: NominatimPlace[] = [];
+
+  for (const item of items) {
+    const pos = item.position;
+    if (!pos || !Number.isFinite(pos.lat) || !Number.isFinite(pos.lng)) continue;
+
+    const addr = item.address || {};
+    const primaryCategory = item.categories?.find((c) => c.primary) || item.categories?.[0];
+    const category = primaryCategory ? primaryCategory.name : (item.resultType || 'place');
+
+    const phone = item.contacts?.[0]?.phone?.[0]?.value;
+    const website = item.contacts?.[0]?.www?.[0]?.value;
+
+    const name = item.title || addr.label?.split(',')[0].trim() || '';
+    if (!name || name.length < 2) continue;
 
     out.push({
-      name:
-        (typeof r.name === 'string' && r.name.trim()) ||
-        (typeof addr.shop === 'string' && addr.shop) ||
-        (typeof addr.amenity === 'string' && addr.amenity) ||
-        (typeof r.display_name === 'string' ? r.display_name.split(',')[0].trim() : ''),
-      category: `${r.class || 'place'}:${r.type || 'unknown'}`,
-      displayName: String(r.display_name || ''),
-      lat,
-      lon,
+      name,
+      category,
+      displayName: addr.label || name,
+      lat: pos.lat,
+      lon: pos.lng,
       address: {
-        road: addr.road,
-        suburb: addr.suburb || addr.neighbourhood,
-        city: addr.city || addr.town || addr.village,
+        road: addr.street
+          ? `${addr.street}${addr.houseNumber ? ' ' + addr.houseNumber : ''}`
+          : undefined,
+        suburb: addr.district,
+        city: addr.city || addr.county,
         state: addr.state,
-        country: addr.country,
-        countryCode: addr.country_code,
-        postcode: addr.postcode,
+        country: addr.countryName,
+        countryCode: addr.countryCode?.toLowerCase(),
+        postcode: addr.postalCode,
       },
-      phone: extratags.phone || extratags['contact:phone'] || undefined,
-      website: extratags.website || extratags['contact:website'] || undefined,
-      osmType: String(r.osm_type || ''),
-      osmId: Number(r.osm_id || 0),
+      phone,
+      website,
+      osmType: '',
+      osmId: 0,
     });
   }
-  return out.filter((p) => p.name && p.name.length >= 2);
+
+  return out;
 }
 
 interface SearchOpts {
   query: string;
-  countryCode?: string;       // e.g. 'ae' to scope to UAE
+  countryCode?: string;
   limit?: number;
   timeoutMs?: number;
 }
@@ -81,33 +115,29 @@ interface SearchOpts {
 export async function searchNominatim(opts: SearchOpts): Promise<NominatimPlace[]> {
   const {
     query,
-    countryCode = 'ae',
+    countryCode = 'AE',
     limit = 20,
     timeoutMs = 8000,
   } = opts;
 
-  const url = 'https://nominatim.openstreetmap.org/search';
+  const url = 'https://geocode.search.hereapi.com/v1/geocode';
   try {
     const res = await axios.get(url, {
       timeout: timeoutMs,
       params: {
         q: query,
-        format: 'jsonv2',
-        addressdetails: 1,
-        extratags: 1,
+        in: `countryCode:${countryCode.toUpperCase()}`,
         limit,
-        countrycodes: countryCode,
+        apiKey: HERE_API_KEY,
       },
       headers: {
-        // Nominatim requires an identifying UA per their usage policy
-        'User-Agent': 'FatoorahHunter/1.0 (+https://github.com/OgSmiley1/Fatoorah-legacy-)',
         Accept: 'application/json',
       },
       validateStatus: (s) => s >= 200 && s < 400,
     });
     return parseNominatim(res.data);
   } catch (e: any) {
-    logger.debug('nominatim_search_failed', { query, error: e.message });
+    logger.debug('here_geocode_search_failed', { query, error: e.message });
     return [];
   }
 }
