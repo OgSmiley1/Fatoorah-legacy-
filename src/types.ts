@@ -145,6 +145,7 @@ export interface SearchParams {
   riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | 'ALL';
   minFollowers?: number;
   onlyQualified?: boolean;
+  hunterType?: 'payment_link' | 'pos';
   platforms?: {
     instagram: boolean;
     facebook: boolean;
