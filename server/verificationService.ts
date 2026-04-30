@@ -17,6 +17,7 @@ export type SourceLabel =
   | 'startpage'
   | 'mojeek'
   | 'searx'
+  | 'serper'
   | 'here-geocoding'
   | 'invest-in-dubai'
   | 'website'

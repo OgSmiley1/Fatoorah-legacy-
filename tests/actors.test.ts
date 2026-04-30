@@ -2,6 +2,7 @@
 // Pure, no network, no DB.
 import { extractJsonLd, extractMeta } from '../server/actors/jsonLdExtractor';
 import { parseNominatim } from '../server/actors/nominatimActor';
+import { parseSerperResponse } from '../server/actors/serperSearch';
 import { parseInstagramHtml, parseInstagramWebProfileJson } from '../server/actors/instagramActor';
 
 // ---------- JSON-LD ----------
@@ -193,6 +194,47 @@ describe('parseNominatim', () => {
   test('returns empty array on bad input', () => {
     expect(parseNominatim(null as any)).toEqual([]);
     expect(parseNominatim('bad' as any)).toEqual([]);
+  });
+});
+
+// ---------- Serper (Google Search API) ----------
+
+const SERPER_RAW = {
+  organic: [
+    {
+      title: 'Abaya Boutique DXB',
+      link: 'https://abaya-boutique.ae',
+      snippet: 'Best abayas in Dubai, UAE.',
+    },
+    {
+      title: 'No URL result',
+      snippet: 'This should be skipped.',
+    },
+    {
+      title: 'Arabic Flavors',
+      link: 'https://arabicflavors.ae',
+      snippet: 'Authentic Arabic cuisine in Abu Dhabi.',
+    },
+  ],
+};
+
+describe('parseSerperResponse', () => {
+  const results = parseSerperResponse(SERPER_RAW);
+
+  test('parses organic results and skips entries without link', () => {
+    expect(results.length).toBe(2);
+  });
+
+  test('maps title, url, and description', () => {
+    const [first] = results;
+    expect(first.url).toBe('https://abaya-boutique.ae');
+    expect(first.title).toBe('Abaya Boutique DXB');
+    expect(first.description).toBe('Best abayas in Dubai, UAE.');
+  });
+
+  test('returns empty array on bad input', () => {
+    expect(parseSerperResponse(null)).toEqual([]);
+    expect(parseSerperResponse({ organic: 'bad' })).toEqual([]);
   });
 });
 

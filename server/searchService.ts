@@ -25,6 +25,7 @@ import { braveSearch } from './actors/braveSearch';
 import { startpageSearch } from './actors/startpageSearch';
 import { mojeekSearch } from './actors/mojeekSearch';
 import { searxSearch } from './actors/searxMetaSearch';
+import { serperSearch } from './actors/serperSearch';
 import { verifyEmail } from './actors/emailVerifier';
 import { verifyWhatsApp } from './actors/whatsappVerifier';
 import {
@@ -118,7 +119,8 @@ export interface TaggedResult extends SearchResult {
   sources: SourceLabel[];
 }
 
-// Primary search: run 7 keyless engines in parallel, merge by URL, tag with sources.
+// Primary search: run up to 8 engines in parallel (7 keyless + Serper/Google if key set).
+// Serper is silently skipped when SERPER_API_KEY is absent.
 async function webSearch(query: string): Promise<TaggedResult[]> {
   const engines: { label: SourceLabel; fn: () => Promise<SearchResult[]> }[] = [
     { label: 'ddg',       fn: () => ddgHtmlSearch(query) },
@@ -128,6 +130,7 @@ async function webSearch(query: string): Promise<TaggedResult[]> {
     { label: 'startpage', fn: () => startpageSearch(query) },
     { label: 'mojeek',    fn: () => mojeekSearch(query) },
     { label: 'searx',     fn: () => searxSearch(query) },
+    { label: 'serper',    fn: () => serperSearch(query) },
   ];
 
   const settled = await Promise.allSettled(engines.map(e => e.fn()));
