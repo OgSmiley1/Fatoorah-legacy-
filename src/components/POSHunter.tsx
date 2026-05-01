@@ -98,8 +98,31 @@ export const POSHunter: React.FC<POSHunterProps> = ({ onResultsFound, onClose })
               content: `🚀 Hunting for **${action.keywords}** in **${action.location || 'UAE'}**...\n\nLooking for physical retail locations with outdated POS systems ready for upgrade.`,
               timestamp: Date.now()
             }]);
-            // Trigger actual search through parent
-            onResultsFound([]);
+            // Execute actual search via /api/search
+            const searchRes = await fetch('/api/search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                keywords: action.keywords,
+                location: action.location || 'UAE',
+                maxResults: 50,
+                onlyQualified: true
+              })
+            });
+
+            if (searchRes.ok) {
+              const searchData = await searchRes.json();
+              const merchants = searchData.merchants || [];
+              onResultsFound(merchants);
+
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `✅ Found **${merchants.length}** potential merchants! Check the hunt results below.`,
+                timestamp: Date.now()
+              }]);
+            } else {
+              throw new Error('Search failed');
+            }
           }
         } catch (e) {
           setMessages(prev => [...prev, {

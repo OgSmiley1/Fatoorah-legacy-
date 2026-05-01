@@ -1,216 +1,45 @@
-import React from 'react';
-import {
-  Search, MapPin, Filter, Loader2, Download, Save, Shield,
-  Trash2, ChevronRight, Zap,
-  X, TrendingUp, Send, Sparkles, MessageCircle, ScanLine, ShoppingCart
-} from 'lucide-react';
-import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
-import { geminiService } from '../services/geminiService';
-import { MerchantCard } from './MerchantCard';
-import { PipelineView } from './PipelineView';
-import { exportMerchantsToExcel } from '../utils/exportExcel';
-import { TelegramModal } from './TelegramModal';
-import { WhatsAppModal } from './WhatsAppModal';
-import { CardScannerModal } from './CardScannerModal';
-import { WizardChat } from './WizardChat';
-import { PaymentLinkHunter } from './PaymentLinkHunter';
-import { POSHunter } from './POSHunter';
-import { telegramService } from '../services/telegramService';
-import { io, Socket } from 'socket.io-client';
-import { motion, AnimatePresence } from 'motion/react';
-import { clsx, type ClassValue } from 'clsx';
-import { twMerge } from 'tailwind-merge';
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-import { useSearchHistory } from '../hooks/useSearchHistory';
-
-export const HunterDashboard: React.FC = () => {
-  const [params, setParams] = React.useState<SearchParams>({
-    keywords: 'Local Businesses, Retailers, SMEs',
-    location: 'United Arab Emirates',
-    categories: [],
-    subCategories: [],
-    platforms: {
-      instagram: true,
-      facebook: true,
-      telegram: true,
-      tiktok: true,
-      website: true,
-    },
-    maxResults: 15,
-    onlyQualified: true,
-  });
-
-  const [subInput, setSubInput] = React.useState('');
-
-  const toggleCategory = (cat: string) => {
-    setParams(prev => ({
-      ...prev,
-      categories: prev.categories.includes(cat)
-        ? prev.categories.filter(c => c !== cat)
-        : [...prev.categories, cat]
-    }));
-  };
-
-  const addSubCategory = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && subInput.trim()) {
-      e.preventDefault();
-      if (!params.subCategories.includes(subInput.trim())) {
-        setParams(prev => ({
-          ...prev,
-          subCategories: [...prev.subCategories, subInput.trim()]
-        }));
-      }
-      setSubInput('');
-    }
-  };
-
-  const removeSubCategory = (sub: string) => {
-    setParams(prev => ({
-      ...prev,
-      subCategories: prev.subCategories.filter(s => s !== sub)
-    }));
-  };
-
-  const [loading, setLoading] = React.useState(false);
-  const [searchProgress, setSearchProgress] = React.useState<{ query: string, count: number } | null>(null);
-  const [merchants, setMerchants] = React.useState<Merchant[]>([]);
-  const [savedLeads, setSavedLeads] = React.useState<Merchant[]>([]);
-  const [stats, setStats] = React.useState({ total: 0, leads: 0 });
-  const [showFilters, setShowFilters] = React.useState(true);
-  const [showTelegram, setShowTelegram] = React.useState(false);
-  const [showWhatsApp, setShowWhatsApp] = React.useState(false);
-  const [showCardScanner, setShowCardScanner] = React.useState(false);
-  const [showPaymentLinkHunter, setShowPaymentLinkHunter] = React.useState(false);
-  const [showPOSHunter, setShowPOSHunter] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
-  const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
-  const socketRef = React.useRef<Socket | null>(null);
-  
-  const { history: searchHistory, clearHistory: clearSearchHistory, refreshHistory, saveSearch } = useSearchHistory();
-
-  const refreshStats = async () => {
-    try {
-      const data = await geminiService.getStats();
-      setStats({ total: data.totalMerchants, leads: data.totalLeads });
-      
-      const leads = await geminiService.getLeads();
-      setSavedLeads(leads);
-      
-      refreshHistory();
-    } catch (error) {
-      console.error("Failed to refresh stats:", error);
-    }
-  };
-
-  React.useEffect(() => {
-    refreshStats();
-  }, []);
-
-  // Socket.io initialization
-  React.useEffect(() => {
-    const socket = io();
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('Connected to server socket');
-    });
-
-    socket.on('hunt-started', (data: any) => {
-      setLoading(true);
-      setSearchProgress({ query: data.query, count: 0 });
-      setParams(prev => ({ ...prev, keywords: data.query }));
-    });
-
-    socket.on('hunt-progress', (data: any) => {
-      setSearchProgress(data);
-    });
-
-    socket.on('hunt-completed', (data: any) => {
-      setLoading(false);
-      setSearchProgress(null);
-      setMerchants(data.merchants);
-      refreshStats();
-    });
-
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
-
-  const handleSearchRef = React.useRef<(keywords?: string) => Promise<void>>(null);
-
-  const handleSearch = async (overrideKeywords?: string) => {
-    const typed = (overrideKeywords || params.keywords || '').trim();
-    const auto = [
-      params.categories.join(' '),
-      params.subCategories.join(' '),
-      'shop OR boutique OR store',
-    ].filter(Boolean).join(' ').trim();
-    const searchKeywords = typed || auto || 'online shop UAE boutique';
-
-    setLoading(true);
-    setSearchProgress({ query: searchKeywords, count: 0 });
-    setMerchants([]);
-
-    try {
-      const searchParams = { ...params, keywords: searchKeywords };
-
-      const results = await geminiService.searchMerchants(searchParams);
-      setMerchants(results);
-
-      saveSearch({
-        sessionId: Math.random().toString(36).substr(2, 9),
-        query: searchKeywords,
-        location: params.location,
-        category: params.categories.join(', '),
-        resultsCount: results.length
-      });
-
-      refreshStats();
-
-      if (socketRef.current) {
-        socketRef.current.emit('hunt-finished', {
-          merchants: results,
-          query: searchKeywords
-        });
-      }
-    } catch (e) {
-      console.error("Search failed:", e);
-      setTgStatus('error');
-      setTimeout(() => setTgStatus('idle'), 5000);
-    } finally {
-      setLoading(false);
-      setSearchProgress(null);
-    }
-  };
-
-  React.useEffect(() => {
-    handleSearchRef.current = handleSearch;
-  }, [handleSearch]);
-
-  const handleUpdateLead = async (id: string, status: LeadStatus) => {
-    try {
-      await geminiService.updateLead(id, { status });
-      refreshStats();
-    } catch (error) {
-      console.error("Failed to update lead:", error);
-    }
-  };
-
-  const handleSaveLead = async (merchant: Merchant) => {
-    handleUpdateLead(merchant.id, 'NEW');
-  };
-
   const clearAllHistory = () => {
     if (window.confirm('Are you sure you want to clear all history?')) {
       clearSearchHistory();
       setMerchants([]);
       refreshStats();
     }
+  };
+
+  const autoSendHunterResultsToTelegram = (merchantResults: Merchant[]) => {
+    const autoSend = localStorage.getItem('sw_tg_autosend') === 'true';
+
+    if (!autoSend || merchantResults.length === 0) return;
+
+    const tgToken = localStorage.getItem('sw_tg_token');
+    const tgChatId = localStorage.getItem('sw_tg_chatid');
+
+    if (!tgToken || !tgChatId) return;
+
+    setTgStatus('sending');
+
+    merchantResults.forEach((merchant, idx) => {
+      setTimeout(() => {
+        telegramService
+          .sendMessage(tgToken, tgChatId, merchant)
+          .then((ok) => {
+            if (!ok) {
+              setTgStatus('error');
+              setTimeout(() => setTgStatus('idle'), 3000);
+              return;
+            }
+
+            if (idx === merchantResults.length - 1) {
+              setTgStatus('success');
+              setTimeout(() => setTgStatus('idle'), 2000);
+            }
+          })
+          .catch(() => {
+            setTgStatus('error');
+            setTimeout(() => setTgStatus('idle'), 3000);
+          });
+      }, idx * 500);
+    });
   };
 
   return (
@@ -239,6 +68,7 @@ export const HunterDashboard: React.FC = () => {
               <Send size={18} />
               <span className="hidden sm:inline">Telegram Ops</span>
             </button>
+
             <button
               onClick={() => setShowWhatsApp(true)}
               className="mission-control-button mission-control-button-secondary"
@@ -246,6 +76,7 @@ export const HunterDashboard: React.FC = () => {
               <MessageCircle size={18} />
               <span className="hidden sm:inline">WhatsApp</span>
             </button>
+
             <button
               onClick={() => setShowCardScanner(true)}
               className="mission-control-button mission-control-button-secondary"
@@ -253,6 +84,7 @@ export const HunterDashboard: React.FC = () => {
               <ScanLine size={18} />
               <span className="hidden sm:inline">Scan Card</span>
             </button>
+
             <button
               onClick={() => setShowPaymentLinkHunter(true)}
               className="mission-control-button mission-control-button-secondary"
@@ -261,6 +93,7 @@ export const HunterDashboard: React.FC = () => {
               <TrendingUp size={18} />
               <span className="hidden sm:inline">Payment Links</span>
             </button>
+
             <button
               onClick={() => setShowPOSHunter(true)}
               className="mission-control-button mission-control-button-secondary"
@@ -269,6 +102,7 @@ export const HunterDashboard: React.FC = () => {
               <ShoppingCart size={18} />
               <span className="hidden sm:inline">POS Systems</span>
             </button>
+
             <div className="hidden md:flex items-center gap-6 px-6 border-x border-slate-800">
               <div className="text-center">
                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1">Total Found</p>
@@ -279,6 +113,7 @@ export const HunterDashboard: React.FC = () => {
                 <p className="text-lg font-black text-emerald-400">{stats.leads}</p>
               </div>
             </div>
+
             <button
               onClick={() => exportMerchantsToExcel(merchants.length > 0 ? merchants : savedLeads)}
               disabled={merchants.length === 0 && savedLeads.length === 0}
@@ -287,6 +122,7 @@ export const HunterDashboard: React.FC = () => {
               <Download size={18} />
               <span className="hidden sm:inline">Export Pipeline</span>
             </button>
+
             <a
               href="/api/export/merchants.csv"
               className="mission-control-button mission-control-button-secondary"
@@ -300,30 +136,33 @@ export const HunterDashboard: React.FC = () => {
       </header>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Sidebar Filters */}
-        <aside className={cn(
-          "w-80 border-r border-slate-800 bg-slate-900/30 overflow-y-auto transition-all duration-300 hidden lg:block",
-          !showFilters && "-ml-80"
-        )}>
+        <aside
+          className={cn(
+            "w-80 border-r border-slate-800 bg-slate-900/30 overflow-y-auto transition-all duration-300 hidden lg:block",
+            !showFilters && "-ml-80"
+          )}
+        >
           <div className="p-6 space-y-8">
-            {/* Search Section */}
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <h3 className="mission-control-label">Lead Qualification</h3>
-                <button 
-                  onClick={() => setParams({
-                    ...params,
-                    categories: [],
-                    subCategories: [],
-                    businessAge: undefined,
-                    riskLevel: undefined,
-                    minFollowers: undefined
-                  })}
+                <button
+                  onClick={() =>
+                    setParams({
+                      ...params,
+                      categories: [],
+                      subCategories: [],
+                      businessAge: undefined,
+                      riskLevel: undefined,
+                      minFollowers: undefined,
+                    })
+                  }
                   className="text-[10px] font-bold text-slate-500 hover:text-rose-500 uppercase transition-colors"
                 >
                   Reset
                 </button>
               </div>
+
               <div className="space-y-4">
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-slate-500 uppercase">Target Categories</label>
@@ -359,10 +198,14 @@ export const HunterDashboard: React.FC = () => {
                         placeholder="Type & Enter (e.g. Luxury)"
                       />
                     </div>
+
                     {params.subCategories.length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
                         {params.subCategories.map(sub => (
-                          <span key={sub} className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-[9px] text-slate-300 border border-slate-700">
+                          <span
+                            key={sub}
+                            className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800 text-[9px] text-slate-300 border border-slate-700"
+                          >
                             {sub}
                             <button onClick={() => removeSubCategory(sub)} className="hover:text-rose-500">
                               <X size={10} />
@@ -395,40 +238,42 @@ export const HunterDashboard: React.FC = () => {
                     onChange={e => setParams({ ...params, onlyQualified: e.target.checked })}
                     className="h-4 w-4 rounded border-slate-700 bg-slate-950 text-emerald-500 focus:ring-emerald-500/50"
                   />
-                  <span>MyFatoorah-ready only <span className="text-slate-500 font-normal normal-case">(drops merchants with Stripe/Tap/PayTabs)</span></span>
+                  <span>
+                    MyFatoorah-ready only{' '}
+                    <span className="text-slate-500 font-normal normal-case">
+                      (drops merchants with Stripe/Tap/PayTabs)
+                    </span>
+                  </span>
                 </label>
               </div>
             </div>
 
-            {/* Platforms */}
             <div className="space-y-4">
               <h3 className="mission-control-label">Discovery Channels</h3>
               <div className="grid grid-cols-2 gap-2">
                 {Object.entries(params.platforms).map(([key, value]) => (
                   <button
                     key={key}
-                    onClick={() => setParams({
-                      ...params,
-                      platforms: { ...params.platforms, [key]: !value }
-                    })}
+                    onClick={() =>
+                      setParams({
+                        ...params,
+                        platforms: { ...params.platforms, [key]: !value },
+                      })
+                    }
                     className={cn(
                       "flex items-center gap-2 px-3 py-2 rounded-lg border text-[10px] font-bold uppercase transition-all",
-                      value 
-                        ? "bg-blue-600/10 border-blue-600/50 text-blue-400" 
+                      value
+                        ? "bg-blue-600/10 border-blue-600/50 text-blue-400"
                         : "bg-slate-950/50 border-slate-800 text-slate-500 hover:border-slate-700"
                     )}
                   >
-                    <div className={cn(
-                      "w-1.5 h-1.5 rounded-full",
-                      value ? "bg-blue-400" : "bg-slate-700"
-                    )} />
+                    <div className={cn("w-1.5 h-1.5 rounded-full", value ? "bg-blue-400" : "bg-slate-700")} />
                     {key}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* Search History */}
             {searchHistory.length > 0 && (
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
@@ -437,6 +282,7 @@ export const HunterDashboard: React.FC = () => {
                     <Trash2 size={12} />
                   </button>
                 </div>
+
                 <div className="space-y-2">
                   {searchHistory.map((h) => (
                     <button
@@ -461,12 +307,10 @@ export const HunterDashboard: React.FC = () => {
           </div>
         </aside>
 
-        {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-slate-950 p-6">
           <div className="max-w-[1200px] mx-auto space-y-6">
-            {/* Navigation Tabs */}
             <div className="flex items-center gap-1 bg-slate-900/50 p-1 rounded-lg border border-slate-800 mb-6 w-fit">
-              <button 
+              <button
                 onClick={() => setActiveTab('hunt')}
                 className={cn(
                   "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
@@ -475,7 +319,8 @@ export const HunterDashboard: React.FC = () => {
               >
                 Lead Hunter
               </button>
-              <button 
+
+              <button
                 onClick={() => setActiveTab('pipeline')}
                 className={cn(
                   "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
@@ -488,105 +333,108 @@ export const HunterDashboard: React.FC = () => {
 
             {activeTab === 'hunt' ? (
               <>
-                {/* Global Search Bar */}
-            <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
-              <div className="flex flex-col md:flex-row gap-3">
-                <div className="flex-1 relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
-                  <input
-                    type="text"
-                    value={params.keywords}
-                    onChange={e => setParams({ ...params, keywords: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
-                    placeholder="Optional — leave empty to use sidebar filters"
-                  />
-                </div>
-                <div className="w-full md:w-64 relative">
-                  <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
-                  <input
-                    type="text"
-                    value={params.location}
-                    onChange={e => setParams({ ...params, location: e.target.value })}
-                    onKeyDown={e => e.key === 'Enter' && handleSearch()}
-                    className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
-                    placeholder="Location..."
-                  />
-                </div>
-                <button
-                  onClick={() => handleSearch()}
-                  disabled={loading}
-                  className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
-                >
-                  {loading ? <Loader2 className="animate-spin" size={24} /> : <Zap size={24} className="group-hover:scale-110 transition-transform" />}
-                  <div className="flex flex-col items-start">
-                    <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
-                    {loading && searchProgress && (
-                      <span className="text-[10px] opacity-70">Found: {searchProgress.count}</span>
-                    )}
+                <div className="mission-control-card p-4 bg-slate-900/80 backdrop-blur-md sticky top-0 z-20 border-blue-500/20 shadow-blue-900/10">
+                  <div className="flex flex-col md:flex-row gap-3">
+                    <div className="flex-1 relative">
+                      <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-blue-500" size={18} />
+                      <input
+                        type="text"
+                        value={params.keywords}
+                        onChange={e => setParams({ ...params, keywords: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-blue-500/50"
+                        placeholder="Optional — leave empty to use sidebar filters"
+                      />
+                    </div>
+
+                    <div className="w-full md:w-64 relative">
+                      <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-emerald-500" size={18} />
+                      <input
+                        type="text"
+                        value={params.location}
+                        onChange={e => setParams({ ...params, location: e.target.value })}
+                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        className="mission-control-input w-full pl-12 h-14 text-lg font-medium bg-slate-950/80 border-slate-800 focus:border-emerald-500/50"
+                        placeholder="Location..."
+                      />
+                    </div>
+
+                    <button
+                      onClick={() => handleSearch()}
+                      disabled={loading}
+                      className="mission-control-button mission-control-button-primary h-14 px-8 text-lg group"
+                    >
+                      {loading ? (
+                        <Loader2 className="animate-spin" size={24} />
+                      ) : (
+                        <Zap size={24} className="group-hover:scale-110 transition-transform" />
+                      )}
+
+                      <div className="flex flex-col items-start">
+                        <span>{loading ? "Hunting..." : "Hunt Leads"}</span>
+                        {loading && searchProgress && (
+                          <span className="text-[10px] opacity-70">Found: {searchProgress.count}</span>
+                        )}
+                      </div>
+                    </button>
                   </div>
-                </button>
-              </div>
-            </div>
-
-            {/* Results Grid */}
-            {merchants.length === 0 && !loading ? (
-              <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
-                <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
-                  <Search size={40} className="text-slate-700" />
                 </div>
-                <div className="space-y-2">
-                  <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
-                  <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
-                    Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
-                  </p>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
-                <AnimatePresence mode="popLayout">
-                  {merchants.map((merchant, i) => (
-                    <MerchantCard
-                      key={`${merchant.id}-${i}`}
-                      merchant={merchant}
-                      onSave={handleSaveLead}
-                      isSaved={savedLeads.some(l => l.id === merchant.id)}
-                    />
-                  ))}
-                </AnimatePresence>
-              </div>
-            )}
 
-            {/* Loading State */}
-            {loading && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {[1, 2, 3, 4].map(i => (
-                  <div key={i} className="mission-control-card h-[400px] animate-pulse">
-                    <div className="p-6 space-y-6">
-                      <div className="flex justify-between">
-                        <div className="w-1/2 h-6 bg-slate-800 rounded" />
-                        <div className="w-20 h-6 bg-slate-800 rounded-full" />
-                      </div>
-                      <div className="grid grid-cols-3 gap-3">
-                        {[1, 2, 3].map(j => (
-                          <div key={j} className="h-16 bg-slate-800 rounded-xl" />
-                        ))}
-                      </div>
-                      <div className="h-24 bg-slate-800 rounded-xl" />
+                {merchants.length === 0 && !loading ? (
+                  <div className="h-[60vh] flex flex-col items-center justify-center text-center space-y-6">
+                    <div className="w-20 h-20 bg-slate-900 rounded-3xl flex items-center justify-center border border-slate-800 shadow-2xl">
+                      <Search size={40} className="text-slate-700" />
+                    </div>
+                    <div className="space-y-2">
+                      <h2 className="text-2xl font-black text-white uppercase tracking-tight">Ready for Discovery</h2>
+                      <p className="text-slate-500 max-w-sm mx-auto font-bold text-xs uppercase tracking-widest">
+                        Enter keywords and location to start hunting for high-potential MyFatoorah merchants.
+                      </p>
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : (
-          <PipelineView />
-        )}
-      </div>
-    </main>
-  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-2 gap-6 pb-20">
+                    <AnimatePresence mode="popLayout">
+                      {merchants.map((merchant, i) => (
+                        <MerchantCard
+                          key={`${merchant.id}-${i}`}
+                          merchant={merchant}
+                          onSave={handleSaveLead}
+                          isSaved={savedLeads.some(l => l.id === merchant.id)}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </div>
+                )}
 
-      {/* Footer Status Bar */}
+                {loading && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {[1, 2, 3, 4].map(i => (
+                      <div key={i} className="mission-control-card h-[400px] animate-pulse">
+                        <div className="p-6 space-y-6">
+                          <div className="flex justify-between">
+                            <div className="w-1/2 h-6 bg-slate-800 rounded" />
+                            <div className="w-20 h-6 bg-slate-800 rounded-full" />
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            {[1, 2, 3].map(j => (
+                              <div key={j} className="h-16 bg-slate-800 rounded-xl" />
+                            ))}
+                          </div>
+                          <div className="h-24 bg-slate-800 rounded-xl" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            ) : (
+              <PipelineView />
+            )}
+          </div>
+        </main>
+      </div>
+
       <footer className="h-10 border-t border-slate-800 bg-slate-900 flex items-center px-6 justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
@@ -602,9 +450,12 @@ export const HunterDashboard: React.FC = () => {
             <span className="text-blue-400 font-bold">Multi-Engine Intelligence (Gemini + Web + InvestInDubai)</span>
           </div>
         </div>
+
         <div className="flex items-center gap-4">
           <span>{stats.total} Merchants in Database</span>
-          <button onClick={clearAllHistory} className="hover:text-rose-500 transition-colors">Clear History</button>
+          <button onClick={clearAllHistory} className="hover:text-rose-500 transition-colors">
+            Clear History
+          </button>
         </div>
       </footer>
 
@@ -624,7 +475,6 @@ export const HunterDashboard: React.FC = () => {
         isOpen={showCardScanner}
         onClose={() => setShowCardScanner(false)}
         onSaveLead={(cardData) => {
-          // Ingest card data as a new merchant/lead
           const merchant = {
             businessName: cardData.company || cardData.name || 'Unknown',
             platform: 'website' as const,
@@ -636,8 +486,13 @@ export const HunterDashboard: React.FC = () => {
             category: 'Business Card Scan',
             physicalAddress: cardData.address || '',
           };
-          geminiService.ingestMerchants([merchant as any], 'Business Card Scan', 'UAE')
-            .then(() => { refreshStats(); setShowCardScanner(false); })
+
+          geminiService
+            .ingestMerchants([merchant as any], 'Business Card Scan', 'UAE')
+            .then(() => {
+              refreshStats();
+              setShowCardScanner(false);
+            })
             .catch(e => console.error('Failed to save card scan lead:', e));
         }}
       />
@@ -658,25 +513,7 @@ export const HunterDashboard: React.FC = () => {
               if (merchantResults.length > 0) {
                 setMerchants(merchantResults);
                 refreshStats();
-
-                const autoSend = localStorage.getItem('sw_tg_autosend') === 'true';
-                if (autoSend) {
-                  const tgToken = localStorage.getItem('sw_tg_token');
-                  const tgChatId = localStorage.getItem('sw_tg_chatid');
-                  if (tgToken && tgChatId) {
-                    setTgStatus('sending');
-                    merchantResults.forEach((merchant, idx) => {
-                      setTimeout(() => {
-                        telegramService.sendMessage(tgToken, tgChatId, merchant).then(() => {
-                          if (idx === merchantResults.length - 1) {
-                            setTgStatus('success');
-                            setTimeout(() => setTgStatus('idle'), 2000);
-                          }
-                        });
-                      }, idx * 500);
-                    });
-                  }
-                }
+                autoSendHunterResultsToTelegram(merchantResults);
               }
             }}
             onClose={() => setShowPaymentLinkHunter(false)}
@@ -691,25 +528,7 @@ export const HunterDashboard: React.FC = () => {
               if (merchantResults.length > 0) {
                 setMerchants(merchantResults);
                 refreshStats();
-
-                const autoSend = localStorage.getItem('sw_tg_autosend') === 'true';
-                if (autoSend) {
-                  const tgToken = localStorage.getItem('sw_tg_token');
-                  const tgChatId = localStorage.getItem('sw_tg_chatid');
-                  if (tgToken && tgChatId) {
-                    setTgStatus('sending');
-                    merchantResults.forEach((merchant, idx) => {
-                      setTimeout(() => {
-                        telegramService.sendMessage(tgToken, tgChatId, merchant).then(() => {
-                          if (idx === merchantResults.length - 1) {
-                            setTgStatus('success');
-                            setTimeout(() => setTgStatus('idle'), 2000);
-                          }
-                        });
-                      }, idx * 500);
-                    });
-                  }
-                }
+                autoSendHunterResultsToTelegram(merchantResults);
               }
             }}
             onClose={() => setShowPOSHunter(false)}

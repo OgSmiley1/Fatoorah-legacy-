@@ -88,12 +88,15 @@ function cleanKeywordText(input: string): string {
 function inferLocation(input: string): string {
   const lower = input.toLowerCase();
   const found = LOCATION_HINTS.find(loc => lower.includes(loc.toLowerCase()));
+
   if (!found) return DEFAULT_LOCATION;
+
   return found === 'UAE' ? DEFAULT_LOCATION : found;
 }
 
 function fallbackAction(input: string): HunterAction {
   const keywords = cleanKeywordText(input) || input.trim() || 'instagram shops whatsapp order cash on delivery';
+
   return {
     action: 'search',
     keywords,
@@ -109,10 +112,12 @@ function parseAction(raw: string, input: string): HunterAction {
     .trim();
 
   const match = cleaned.match(/\{[\s\S]*\}/);
+
   if (!match) return fallbackAction(input);
 
   try {
     const parsed = JSON.parse(match[0]);
+
     if (parsed?.action === 'stats') {
       return {
         action: 'stats',
@@ -122,10 +127,12 @@ function parseAction(raw: string, input: string): HunterAction {
       };
     }
 
+    const fallback = fallbackAction(input);
+
     return {
       action: 'search',
-      keywords: String(parsed?.keywords || fallbackAction(input).keywords).trim(),
-      location: String(parsed?.location || inferLocation(input)).trim(),
+      keywords: String(parsed?.keywords || fallback.keywords).trim(),
+      location: String(parsed?.location || fallback.location).trim(),
       type: 'payment_link',
     };
   } catch {
@@ -170,8 +177,7 @@ async function askAiForAction(message: string, history: Message[]): Promise<Hunt
     if (!res.ok) return fallbackAction(message);
 
     const data = await res.json();
-    const responseText = data?.response || '';
-    return parseAction(responseText, message);
+    return parseAction(data?.response || '', message);
   } catch {
     return fallbackAction(message);
   } finally {
@@ -187,6 +193,7 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
       timestamp: Date.now(),
     },
   ]);
+
   const [input, setInput] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -198,9 +205,15 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
 
   async function runHunter(text?: string) {
     const msg = (text || input).trim();
+
     if (!msg || loading) return;
 
-    const userMsg: Message = { role: 'user', content: msg, timestamp: Date.now() };
+    const userMsg: Message = {
+      role: 'user',
+      content: msg,
+      timestamp: Date.now(),
+    };
+
     const nextMessages = [...messages, userMsg];
 
     setMessages(nextMessages);
@@ -209,40 +222,55 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
 
     try {
       const action = await askAiForAction(msg, nextMessages);
+
       if (action.action === 'stats') {
         const stats = await geminiService.getStats();
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: `📊 Pipeline now has ${stats.totalMerchants} merchants and ${stats.totalLeads} leads.`,
-          timestamp: Date.now(),
-        }]);
+
+        setMessages(prev => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `📊 Pipeline now has ${stats.totalMerchants} merchants and ${stats.totalLeads} leads.`,
+            timestamp: Date.now(),
+          },
+        ]);
+
         return;
       }
 
       const searchParams = buildPaymentLinkSearchParams(action);
 
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `🚀 Running real hunt: ${action.keywords} — ${action.location}. Filtering for manual-payment signals and excluding merchants that already show gateway evidence.`,
-        timestamp: Date.now(),
-      }]);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `🚀 Running real Payment Link hunt: ${action.keywords} — ${action.location}.`,
+          timestamp: Date.now(),
+        },
+      ]);
 
       const results = await geminiService.searchMerchants(searchParams);
       onResultsFound(results);
 
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: results.length > 0
-          ? `✅ Found ${results.length} Payment Link prospects. I pushed them into the main results grid.`
-          : '⚠️ No clean Payment Link prospects found. Try a narrower niche like “abaya shops Dubai WhatsApp order” or “home bakery Sharjah COD”.',
-        timestamp: Date.now(),
-      }]);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: results.length > 0
+            ? `✅ Found ${results.length} Payment Link prospects. I pushed them into the main results grid.`
+            : '⚠️ No clean Payment Link prospects found. Try a narrower niche like “abaya shops Dubai WhatsApp order”.',
+          timestamp: Date.now(),
+        },
+      ]);
     } catch (error: any) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: `❌ Hunt failed: ${error?.message || 'unknown error'}. Check /api/stats runtime.lastError and server logs.`,
-        timestamp: Date.now(),
-      }]);
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `❌ Hunt failed: ${error?.message || 'unknown error'}. Check /api/stats runtime.lastError and server logs.`,
+          timestamp: Date.now(),
+        },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -262,7 +290,9 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
               <Link2 className="w-5 h-5 text-white" />
               <h3 className="font-bold text-white">Payment Link Hunter</h3>
             </div>
-            <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">✕</button>
+            <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">
+              ✕
+            </button>
           </div>
         </div>
 
@@ -275,19 +305,27 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
                 animate={{ opacity: 1, y: 0 }}
                 className={cn(
                   'max-w-xs rounded-lg p-3 text-sm whitespace-pre-wrap',
-                  msg.role === 'user' ? 'ml-auto bg-blue-600 text-white' : 'bg-slate-700 text-slate-100'
+                  msg.role === 'user'
+                    ? 'ml-auto bg-blue-600 text-white'
+                    : 'bg-slate-700 text-slate-100'
                 )}
               >
                 {msg.content}
               </motion.div>
             ))}
           </AnimatePresence>
+
           {loading && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 text-slate-400 text-sm">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="flex items-center gap-2 text-slate-400 text-sm"
+            >
               <Loader2 className="w-4 h-4 animate-spin" />
-              Searching public signals...
+              Searching public payment-link signals...
             </motion.div>
           )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -320,6 +358,7 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
               className="w-full bg-slate-800 border border-slate-600 rounded pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:border-blue-500 focus:outline-none"
             />
           </div>
+
           <button
             onClick={() => runHunter()}
             disabled={loading || !input.trim()}
