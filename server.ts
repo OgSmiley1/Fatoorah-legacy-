@@ -228,6 +228,7 @@ async function startServer() {
         instagramHandle: l.instagram_handle,
         facebookUrl: l.facebook_url,
         tiktokHandle: l.tiktok_handle,
+        telegramHandle: l.telegram_handle,
         url: l.source_url,
         platform: l.source_platform,
         category: l.category,
