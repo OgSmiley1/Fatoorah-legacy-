@@ -88,6 +88,7 @@ export interface Merchant {
   hasGateway?: boolean;
   mfReady?: boolean;
   paymentGateway?: string;
+  paymentMethods?: string[];
   fitScore: number | null;
   contactScore: number | null;
   confidenceScore: number | null;
