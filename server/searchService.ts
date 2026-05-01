@@ -6,7 +6,11 @@ import { checkDuplicate } from './dedupService';
 import { retrySafe, envInt } from './retry';
 import { metrics } from './metrics';
 import { persistLead } from './persistLead';
-import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
+import {
+  computeFitScore, computeContactScore, computeConfidence,
+  computeQualityScore, computeReliabilityScore, computeComplianceScore,
+  estimateRevenue,
+} from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
 import {
@@ -35,6 +39,7 @@ import { verifyWhatsApp } from './actors/whatsappVerifier';
 import {
   buildConsensus,
   identityKey,
+  normalizeHandle,
   type RawLead,
   type SourceLabel,
   type ConsensusLead,
@@ -290,7 +295,7 @@ export async function enrichMerchantContacts(m: any) {
       m.phone = m.phone || webContacts.phone || null;
       m.email = m.email || webContacts.email || null;
       m.whatsapp = m.whatsapp || webContacts.whatsapp || null;
-      m.instagramHandle = m.instagramHandle || webContacts.instagram || null;
+      m.instagramHandle = m.instagramHandle || normalizeHandle(webContacts.instagram) || null;
       m.facebookUrl = m.facebookUrl || webContacts.facebook || null;
       m.tiktokHandle = m.tiktokHandle || webContacts.tiktok || null;
 
@@ -317,7 +322,7 @@ export async function enrichMerchantContacts(m: any) {
         for (const link of s.sameAs || []) {
           if (!m.instagramHandle && /instagram\.com\//i.test(link)) {
             const h = link.match(/instagram\.com\/([a-zA-Z0-9._]+)/i);
-            if (h) m.instagramHandle = h[1];
+            if (h) m.instagramHandle = normalizeHandle(h[1]);
           }
           if (!m.facebookUrl && /facebook\.com\//i.test(link)) m.facebookUrl = link;
           if (!m.tiktokHandle && /tiktok\.com\/@/i.test(link)) {
@@ -590,7 +595,7 @@ async function runHunt(
     let instagramHandle: string | null = null;
     if (platform === 'instagram') {
       const m = result.url.match(/instagram\.com\/([^\/\?]+)/);
-      if (m) instagramHandle = m[1];
+      if (m) instagramHandle = normalizeHandle(m[1]);
     }
 
     const phoneMatch = snippet.match(PHONE_RE);
@@ -700,6 +705,15 @@ async function runHunt(
     const fitScore = computeFitScore(m.platform, m.followers || 0);
     const contactScore = computeContactScore(m);
     const confidenceScore = computeConfidence(m);
+    const qualityScore = computeQualityScore(m);
+    const reliabilityScore = computeReliabilityScore(m);
+    const complianceScore = computeComplianceScore(m);
+    const revenueEst = estimateRevenue({
+      followers: m.followers,
+      platform: m.platform,
+      category: m.category,
+      isCOD: (m as any).isCOD,
+    });
     const contactValidation = m.contactValidation || {
       status: m.phone || m.email ? 'VERIFIED' : 'UNVERIFIED',
       sources: ['Scraper', m.platform],
@@ -730,7 +744,7 @@ async function runHunt(
         factors: ['New discovery'],
       },
       scripts: { arabic: '', english: '', whatsapp: '', instagram: '' },
-      revenue: { monthly: 0, annual: 0 },
+      revenue: { monthly: revenueEst.monthly, annual: revenueEst.annual, basis: revenueEst.basis },
       pricing: { setupFee: 0, transactionRate: '2.5%', settlementCycle: 'T+1' },
       roi: {
         feeSavings: 0,
@@ -763,6 +777,9 @@ async function runHunt(
       confidenceScore,
       contactScore,
       fitScore: adjustedFitScore,
+      qualityScore,
+      reliabilityScore,
+      complianceScore,
       contactValidation,
       metadata,
     });

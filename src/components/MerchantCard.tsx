@@ -154,7 +154,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers != null ? merchant.followers.toLocaleString() : 'Not sourced'} followers
+                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers != null ? `${merchant.followers.toLocaleString()} followers` : 'Followers unknown'}
               </span>
               {merchant.dulNumber && (
                 <>

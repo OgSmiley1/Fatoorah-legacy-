@@ -16,6 +16,9 @@ export interface PersistLeadInput {
   confidenceScore: number;
   contactScore: number;
   fitScore: number;
+  qualityScore?: number;
+  reliabilityScore?: number;
+  complianceScore?: number;
   contactValidation: any;
   metadata: any;
 }
@@ -50,9 +53,10 @@ export function persistLead(input: PersistLeadInput): PersistLeadResult {
         phone, whatsapp, email, instagram_handle, github_url,
         facebook_url, tiktok_handle, physical_address,
         category, dul_number, confidence_score, contactability_score,
-        myfatoorah_fit_score, followers, evidence_json, contact_validation_json,
+        myfatoorah_fit_score, quality_score, reliability_score, compliance_score,
+        followers, evidence_json, contact_validation_json,
         metadata_json, canonical_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       merchantId,
       m.businessName,
@@ -72,6 +76,9 @@ export function persistLead(input: PersistLeadInput): PersistLeadResult {
       input.confidenceScore,
       input.contactScore,
       input.fitScore,
+      input.qualityScore ?? 0,
+      input.reliabilityScore ?? 0,
+      input.complianceScore ?? 0,
       typeof m.followers === 'number' && m.followers > 0 ? m.followers : null,
       JSON.stringify(m.evidence || []),
       JSON.stringify(input.contactValidation),

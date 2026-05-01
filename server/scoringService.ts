@@ -180,3 +180,48 @@ export function calculateMyFatoorahOffer(m: any, risk: any, revenue: any): MyFat
     isEligible: true
   };
 }
+
+// Estimate monthly GMV from observable signals (followers, platform, category).
+// Returns { monthly, annual, basis } — basis is shown in the UI as the heuristic label.
+export function estimateRevenue(m: {
+  followers?: number | null;
+  platform?: string;
+  category?: string;
+  isCOD?: boolean;
+}): { monthly: number; annual: number; basis: string } {
+  const followers = typeof m.followers === 'number' ? m.followers : 0;
+  const platform = m.platform || 'website';
+  const cat = (m.category || '').toLowerCase();
+
+  // Average order value by category
+  let aov = 150; // AED
+  if (cat.includes('electronics') || cat.includes('gadget')) aov = 600;
+  else if (cat.includes('jewelry') || cat.includes('gold')) aov = 800;
+  else if (cat.includes('perfume') || cat.includes('oud')) aov = 300;
+  else if (cat.includes('fashion') || cat.includes('abaya') || cat.includes('clothing')) aov = 220;
+  else if (cat.includes('food') || cat.includes('restaurant') || cat.includes('cafe')) aov = 80;
+  else if (cat.includes('beauty') || cat.includes('salon') || cat.includes('spa')) aov = 200;
+  else if (cat.includes('home') || cat.includes('decor') || cat.includes('furniture')) aov = 400;
+
+  // Conversion rate % of followers who buy per month
+  let convRate = 0.005; // 0.5% default
+  if (followers > 50000) convRate = 0.003;
+  else if (followers > 10000) convRate = 0.005;
+  else if (followers < 1000 && followers > 0) convRate = 0.012;
+
+  // Platform multiplier (Instagram/TikTok drive more commerce than others)
+  const platformMult = platform === 'instagram' || platform === 'tiktok' ? 1.2
+    : platform === 'facebook' ? 0.9
+    : platform === 'website' ? 1.1
+    : 0.8;
+
+  const monthly = followers > 0
+    ? Math.round(followers * convRate * aov * platformMult / 100) * 100
+    : 0;
+
+  const basis = monthly > 0
+    ? `${followers.toLocaleString()} followers × ${(convRate * 100).toFixed(1)}% CVR × AED ${aov} AOV`
+    : 'Insufficient data';
+
+  return { monthly, annual: monthly * 12, basis };
+}
