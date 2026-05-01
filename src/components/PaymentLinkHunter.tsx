@@ -1,7 +1,7 @@
 import React from 'react';
-import { Send, Loader2, Sparkles, TrendingUp, Link2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Send, Loader2, Link2, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Merchant } from '../types';
+import { Merchant, SearchParams } from '../types';
 import { geminiService } from '../services/geminiService';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -21,38 +21,179 @@ interface Message {
   timestamp: number;
 }
 
-const SYSTEM_PROMPT_PAYMENT = `You are the PAYMENT LINK HUNTER — specialized in finding businesses that collect payments via digital links.
-Your mission: Discover merchants who rely on manual payment collection methods and would benefit from MyFatoorah Payment Links.
+interface HunterAction {
+  action: 'search' | 'stats';
+  keywords: string;
+  location: string;
+  type: 'payment_link';
+}
+
+const DEFAULT_LOCATION = 'United Arab Emirates';
+
+const SYSTEM_PROMPT_PAYMENT = `You are the PAYMENT LINK HUNTER — specialized in finding businesses that still collect payments manually and would benefit from MyFatoorah Payment Links.
+
+Return ONLY JSON. No markdown. No explanation.
 
 Target Signals:
-- Businesses using WhatsApp/Email for payment collection
-- No integrated payment gateway
-- Digital-first (Instagram, TikTok, Facebook shops)
-- Services industries (consultants, freelancers, agencies)
-- E-commerce with manual checkout process
+- WhatsApp order / DM to order
+- Email invoice / send invoice / payment request
+- Bank transfer / cash on delivery / pay on delivery
+- Instagram, TikTok, Facebook shops with manual checkout
+- Consultants, freelancers, agencies, home businesses, online sellers
 
-Exclusions: Already using Stripe, Telr, PayTabs, 2Checkout, PayPal
+Avoid:
+- Stripe, PayPal, Telr, PayTabs, Checkout.com, Tap, Network International, HyperPay
+- PSP blogs, payment companies, directories, government pages
 
-When asked to SEARCH, reply ONLY with JSON:
-{"action":"search","keywords":"...","location":"...","type":"payment_link"}
+JSON schema:
+{"action":"search","keywords":"merchant segment to search","location":"UAE city/country","type":"payment_link"}
 
-For STATS: {"action":"stats"}`;
+For STATS:
+{"action":"stats","keywords":"","location":"United Arab Emirates","type":"payment_link"}`;
 
 const QUICK_SEARCHES = [
-  { label: '💌 Email Invoice Users', msg: 'Find consultants and agencies sending payment links via email in UAE' },
-  { label: '📲 WhatsApp Payment Collectors', msg: 'Hunt for businesses collecting payments through WhatsApp DM in Dubai' },
-  { label: '🛒 Manual Checkout Shops', msg: 'Find Instagram shops without integrated payment processing' },
-  { label: '💼 Freelance Services', msg: 'Locate freelancers and service providers in GCC needing payment links' },
+  { label: '💌 Email Invoice Users', msg: 'consultants agencies service providers sending invoices by email' },
+  { label: '📲 WhatsApp Collectors', msg: 'instagram shops whatsapp to order cash on delivery' },
+  { label: '🛒 Manual Checkout Shops', msg: 'online boutiques dm to order bank transfer no checkout' },
+  { label: '💼 Freelance Services', msg: 'freelancers home businesses payment request whatsapp UAE' },
 ];
+
+const LOCATION_HINTS = [
+  'Dubai',
+  'Abu Dhabi',
+  'Sharjah',
+  'Ajman',
+  'Ras Al Khaimah',
+  'Fujairah',
+  'Umm Al Quwain',
+  'Al Ain',
+  'United Arab Emirates',
+  'UAE',
+  'Saudi Arabia',
+  'Kuwait',
+  'Qatar',
+  'Bahrain',
+  'Oman',
+  'GCC',
+];
+
+function cleanKeywordText(input: string): string {
+  return input
+    .replace(/\b(find|hunt|search|locate|businesses|companies|clients|merchants|users|in|at|around|near|for|please|payment|links?|myfatoorah)\b/gi, ' ')
+    .replace(/\b(dubai|abu dhabi|sharjah|ajman|ras al khaimah|fujairah|umm al quwain|al ain|uae|united arab emirates|gcc|qatar|kuwait|bahrain|oman|saudi arabia)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function inferLocation(input: string): string {
+  const lower = input.toLowerCase();
+  const found = LOCATION_HINTS.find(loc => lower.includes(loc.toLowerCase()));
+
+  if (!found) return DEFAULT_LOCATION;
+
+  return found === 'UAE' ? DEFAULT_LOCATION : found;
+}
+
+function fallbackAction(input: string): HunterAction {
+  const keywords = cleanKeywordText(input) || input.trim() || 'instagram shops whatsapp order cash on delivery';
+
+  return {
+    action: 'search',
+    keywords,
+    location: inferLocation(input),
+    type: 'payment_link',
+  };
+}
+
+function parseAction(raw: string, input: string): HunterAction {
+  const cleaned = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  const match = cleaned.match(/\{[\s\S]*\}/);
+
+  if (!match) return fallbackAction(input);
+
+  try {
+    const parsed = JSON.parse(match[0]);
+
+    if (parsed?.action === 'stats') {
+      return {
+        action: 'stats',
+        keywords: '',
+        location: parsed.location || DEFAULT_LOCATION,
+        type: 'payment_link',
+      };
+    }
+
+    const fallback = fallbackAction(input);
+
+    return {
+      action: 'search',
+      keywords: String(parsed?.keywords || fallback.keywords).trim(),
+      location: String(parsed?.location || fallback.location).trim(),
+      type: 'payment_link',
+    };
+  } catch {
+    return fallbackAction(input);
+  }
+}
+
+function buildPaymentLinkSearchParams(action: HunterAction): SearchParams {
+  const base = action.keywords || 'instagram shops whatsapp order cash on delivery';
+  const location = action.location || DEFAULT_LOCATION;
+
+  return {
+    keywords: [
+      base,
+      location,
+      '"whatsapp to order" OR "dm to order" OR "cash on delivery" OR "pay on delivery" OR "bank transfer" OR "email invoice"',
+      '-stripe -paypal -paytabs -telr -"checkout.com" -"payment gateway"',
+    ].join(' '),
+    location,
+    maxResults: 25,
+    onlyQualified: true,
+    hunterType: 'payment_link',
+  };
+}
+
+async function askAiForAction(message: string, history: Message[]): Promise<HunterAction> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 12_000);
+
+  try {
+    const res = await fetch('/api/ai-chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        message,
+        history: history.map(m => ({ role: m.role, content: m.content })),
+        systemPrompt: SYSTEM_PROMPT_PAYMENT,
+      }),
+    });
+
+    if (!res.ok) return fallbackAction(message);
+
+    const data = await res.json();
+    return parseAction(data?.response || '', message);
+  } catch {
+    return fallbackAction(message);
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
 
 export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsFound, onClose }) => {
   const [messages, setMessages] = React.useState<Message[]>([
     {
       role: 'assistant',
-      content: "🔗 **Payment Link Hunter** — Find businesses sending invoices & payment requests via email, WhatsApp, or social DMs.\n\nThese merchants are perfect for MyFatoorah Payment Links — they'll reduce manual follow-ups by 80%.",
-      timestamp: Date.now()
-    }
+      content: '🔗 Payment Link Hunter ready. I will search for merchants using WhatsApp, DM, email invoices, COD, or bank transfer instead of a proper checkout.',
+      timestamp: Date.now(),
+    },
   ]);
+
   const [input, setInput] = React.useState('');
   const [loading, setLoading] = React.useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -62,87 +203,74 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  async function sendMessage(text?: string) {
+  async function runHunter(text?: string) {
     const msg = (text || input).trim();
+
     if (!msg || loading) return;
 
-    const userMsg: Message = { role: 'user', content: msg, timestamp: Date.now() };
-    setMessages(prev => [...prev, userMsg]);
+    const userMsg: Message = {
+      role: 'user',
+      content: msg,
+      timestamp: Date.now(),
+    };
+
+    const nextMessages = [...messages, userMsg];
+
+    setMessages(nextMessages);
     setInput('');
     setLoading(true);
 
     try {
-      const res = await fetch('/api/ai-chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: msg,
-          history: messages.map(m => ({ role: m.role, content: m.content })),
-          systemPrompt: SYSTEM_PROMPT_PAYMENT
-        })
-      });
+      const action = await askAiForAction(msg, nextMessages);
 
-      if (!res.ok) throw new Error('Server error');
+      if (action.action === 'stats') {
+        const stats = await geminiService.getStats();
 
-      const data = await res.json();
-      const responseText: string = data.response || '';
-
-      const jsonMatch = responseText.match(/\{[\s\S]*?"action"[\s\S]*?\}/);
-      if (jsonMatch) {
-        try {
-          const action = JSON.parse(jsonMatch[0]);
-          if (action.action === 'search' && action.keywords) {
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: `🚀 Hunting for **${action.keywords}** in **${action.location || 'UAE'}**...\n\nLooking for businesses using payment links, email invoicing, and WhatsApp payment requests.`,
-              timestamp: Date.now()
-            }]);
-            // Execute actual search via /api/search
-            const searchRes = await fetch('/api/search', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                keywords: action.keywords,
-                location: action.location || 'UAE',
-                maxResults: 50,
-                onlyQualified: true
-              })
-            });
-
-            if (searchRes.ok) {
-              const searchData = await searchRes.json();
-              const merchants = searchData.merchants || [];
-              onResultsFound(merchants);
-
-              setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `✅ Found **${merchants.length}** potential merchants! Check the hunt results below.`,
-                timestamp: Date.now()
-              }]);
-            } else {
-              throw new Error('Search failed');
-            }
-          }
-        } catch (e) {
-          setMessages(prev => [...prev, {
+        setMessages(prev => [
+          ...prev,
+          {
             role: 'assistant',
-            content: responseText || 'Search initiated.',
-            timestamp: Date.now()
-          }]);
-        }
-      } else {
-        setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: responseText,
-          timestamp: Date.now()
-        }]);
+            content: `📊 Pipeline now has ${stats.totalMerchants} merchants and ${stats.totalLeads} leads.`,
+            timestamp: Date.now(),
+          },
+        ]);
+
+        return;
       }
-    } catch (error) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: '❌ Connection error. Check server status.',
-        timestamp: Date.now()
-      }]);
+
+      const searchParams = buildPaymentLinkSearchParams(action);
+
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `🚀 Running real Payment Link hunt: ${action.keywords} — ${action.location}.`,
+          timestamp: Date.now(),
+        },
+      ]);
+
+      const results = await geminiService.searchMerchants(searchParams);
+      onResultsFound(results);
+
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: results.length > 0
+            ? `✅ Found ${results.length} Payment Link prospects. I pushed them into the main results grid.`
+            : '⚠️ No clean Payment Link prospects found. Try a narrower niche like “abaya shops Dubai WhatsApp order”.',
+          timestamp: Date.now(),
+        },
+      ]);
+    } catch (error: any) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: `❌ Hunt failed: ${error?.message || 'unknown error'}. Check /api/stats runtime.lastError and server logs.`,
+          timestamp: Date.now(),
+        },
+      ]);
     } finally {
       setLoading(false);
     }
@@ -155,33 +283,28 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
       exit={{ opacity: 0, scale: 0.95 }}
       className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-end justify-end p-4"
     >
-      <div className="w-full max-w-md bg-slate-900 rounded-lg shadow-2xl border border-slate-700 flex flex-col h-96">
-        {/* Header */}
+      <div className="w-full max-w-md bg-slate-900 rounded-lg shadow-2xl border border-slate-700 flex flex-col h-[32rem]">
         <div className="bg-gradient-to-r from-blue-600 to-cyan-600 p-4 rounded-t-lg">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Link2 className="w-5 h-5 text-white" />
               <h3 className="font-bold text-white">Payment Link Hunter</h3>
             </div>
-            <button
-              onClick={onClose}
-              className="text-white/60 hover:text-white transition-colors"
-            >
+            <button onClick={onClose} className="text-white/60 hover:text-white transition-colors">
               ✕
             </button>
           </div>
         </div>
 
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-800/50">
           <AnimatePresence>
             {messages.map((msg, i) => (
               <motion.div
-                key={i}
+                key={`${msg.timestamp}-${i}`}
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 className={cn(
-                  "max-w-xs rounded-lg p-3 text-sm",
+                  'max-w-xs rounded-lg p-3 text-sm whitespace-pre-wrap',
                   msg.role === 'user'
                     ? 'ml-auto bg-blue-600 text-white'
                     : 'bg-slate-700 text-slate-100'
@@ -191,6 +314,7 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
               </motion.div>
             ))}
           </AnimatePresence>
+
           {loading && (
             <motion.div
               initial={{ opacity: 0 }}
@@ -198,20 +322,20 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
               className="flex items-center gap-2 text-slate-400 text-sm"
             >
               <Loader2 className="w-4 h-4 animate-spin" />
-              Analyzing businesses...
+              Searching public payment-link signals...
             </motion.div>
           )}
+
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Quick Searches */}
         {messages.length === 1 && (
-          <div className="px-4 py-2 border-t border-slate-700 bg-slate-900/50 max-h-24 overflow-y-auto">
+          <div className="px-4 py-2 border-t border-slate-700 bg-slate-900/50 max-h-28 overflow-y-auto">
             <div className="grid grid-cols-1 gap-1 text-xs">
               {QUICK_SEARCHES.map((q, i) => (
                 <button
                   key={i}
-                  onClick={() => sendMessage(q.msg)}
+                  onClick={() => runHunter(q.msg)}
                   className="text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
                 >
                   {q.label}
@@ -221,23 +345,26 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
           </div>
         )}
 
-        {/* Input */}
         <div className="border-t border-slate-700 p-3 bg-slate-900 rounded-b-lg flex gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
-            placeholder="Describe your hunt..."
-            className="flex-1 bg-slate-800 border border-slate-600 rounded px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-blue-500 focus:outline-none"
-          />
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && runHunter()}
+              placeholder="e.g. abaya shops Dubai WhatsApp order"
+              className="w-full bg-slate-800 border border-slate-600 rounded pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:border-blue-500 focus:outline-none"
+            />
+          </div>
+
           <button
-            onClick={() => sendMessage()}
+            onClick={() => runHunter()}
             disabled={loading || !input.trim()}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-slate-700 text-white p-2 rounded transition-colors"
           >
-            <Send className="w-4 h-4" />
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           </button>
         </div>
       </div>

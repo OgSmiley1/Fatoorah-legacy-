@@ -164,7 +164,8 @@ const migrations = [
   { name: 'longitude', type: 'REAL' },
   { name: 'source_count', type: 'INTEGER DEFAULT 1' },
   { name: 'source_list', type: 'TEXT' },
-  { name: 'followers', type: 'INTEGER' }
+  { name: 'followers', type: 'INTEGER' },
+  { name: 'canonical_id', type: 'TEXT' }
 ];
 
 for (const col of migrations) {
@@ -176,6 +177,20 @@ for (const col of migrations) {
       console.error(`Migration failed for ${col.name}:`, e);
     }
   }
+}
+
+// Unique partial index on canonical_id (NULLs allowed for legacy rows that
+// pre-date the canonical-key dedup path). Combined with INSERT OR IGNORE
+// in the lead-persistence path, this collapses races between concurrent
+// hunts that surface the same merchant.
+try {
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_merchants_canonical_id
+       ON merchants(canonical_id)
+       WHERE canonical_id IS NOT NULL`
+  );
+} catch (e) {
+  console.error('Failed to create canonical_id unique index:', e);
 }
 
 export default db;

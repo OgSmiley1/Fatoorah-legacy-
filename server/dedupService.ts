@@ -1,8 +1,20 @@
 import db from '../db.ts';
+import { canonicalKey, canonicalIdFromKey } from '../src/lib/normalize.ts';
 
 export function normalizeName(name: string): string {
   if (!name) return '';
   return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/** Build the deterministic canonical UUIDv5 used as the cross-hunt dedup key. */
+export function merchantCanonicalId(merchant: {
+  businessName?: string;
+  physicalAddress?: string | null;
+  phone?: string | null;
+}): string {
+  return canonicalIdFromKey(
+    canonicalKey(merchant.businessName || '', merchant.physicalAddress || '', merchant.phone || '')
+  );
 }
 
 export function normalizePhone(phone: string): string | null {
@@ -32,6 +44,13 @@ export function checkDuplicate(merchant: any): DuplicateCheckResult {
   const phone = normalizePhone(merchant.phone);
   const email = normalizeEmail(merchant.email);
   const ig = normalizeHandle(merchant.instagramHandle);
+
+  // Strongest signal first: deterministic canonical UUID derived from
+  // (name, address, phone). Same inputs → same id, regardless of casing
+  // or whitespace. Cheap O(1) index lookup.
+  const canonicalId = merchantCanonicalId(merchant);
+  const matchByCanonical = db.prepare('SELECT id FROM merchants WHERE canonical_id = ?').get(canonicalId) as any;
+  if (matchByCanonical) return { isDuplicate: true, reason: 'matched_canonical_id', existingMerchantId: matchByCanonical.id };
 
   // Check by name
   const matchByName = db.prepare('SELECT id FROM merchants WHERE normalized_name = ?').get(normalizedName) as any;
