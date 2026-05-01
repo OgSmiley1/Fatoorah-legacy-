@@ -500,9 +500,20 @@ async function startServer() {
       }
     }
 
-    res.status(503).json({
-      response: "No AI provider is available. Set GEMINI_API_KEY, GROK_API_KEY, or GROQ_API_KEY in your .env file.",
-      provider: 'none'
+    // Rule-based fallback — always returns a usable search action so hunters never break
+    const stopWords = new Set(['find','search','for','the','and','in','of','with','that','are','have','need','using','about','looking','want','show','me','us','give','get','all','any','some','can','will','please','help','from','to','a','an','is','it','do','be','or','on','at','by','its','we','i']);
+    const keywords = message
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w: string) => w.length > 3 && !stopWords.has(w))
+      .slice(0, 6)
+      .join(' ') || message.slice(0, 60);
+    const locationMatch = message.match(/\b(dubai|abu dhabi|sharjah|ajman|uae|kuwait|saudi|ksa|qatar|bahrain)\b/i);
+    const location = locationMatch ? locationMatch[0] : 'UAE';
+    return res.json({
+      response: JSON.stringify({ action: 'search', keywords, location }),
+      provider: 'fallback'
     });
   });
 

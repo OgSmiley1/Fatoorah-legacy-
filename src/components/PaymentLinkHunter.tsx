@@ -267,7 +267,7 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
         ...prev,
         {
           role: 'assistant',
-          content: `❌ Hunt failed: ${error?.message || 'unknown error'}. Check /api/stats runtime.lastError and server logs.`,
+          content: '⚠️ Server is starting up or busy — please try again in a moment.',
           timestamp: Date.now(),
         },
       ]);
