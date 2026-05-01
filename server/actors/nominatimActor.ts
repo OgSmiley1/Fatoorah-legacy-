@@ -8,7 +8,7 @@
 import axios from 'axios';
 import { logger } from '../logger';
 
-const HERE_API_KEY = '94BvpsaPaMq4aH6kUvTlbApyAV68BWw_s8sqh60d-u4';
+const HERE_API_KEY = process.env.HERE_API_KEY || '94BvpsaPaMq4aH6kUvTlbApyAV68BWw_s8sqh60d-u4';
 
 export interface NominatimPlace {
   name: string;
