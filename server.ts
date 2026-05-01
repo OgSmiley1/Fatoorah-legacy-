@@ -423,7 +423,7 @@ async function startServer() {
     if (!message) return res.status(400).json({ error: "message required" });
 
     // Try Gemini
-    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2 || 'AIzaSyDcgWrhfvAqPui2Pm2gNSjuvyVAY0Toa9w';
     if (geminiKey) {
       try {
         const { GoogleGenAI } = await import("@google/genai");
@@ -589,7 +589,7 @@ Respond as JSON: {
 }`;
     }
 
-    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2 || 'AIzaSyDcgWrhfvAqPui2Pm2gNSjuvyVAY0Toa9w';
     if (!geminiKey) {
       return res.status(503).json({ error: "No AI key available. Set GEMINI_API_KEY in .env" });
     }
@@ -616,7 +616,7 @@ Respond as JSON: {
     const { image } = req.body;
     if (!image) return res.status(400).json({ error: "image (base64) required" });
 
-    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2;
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY_2 || 'AIzaSyDcgWrhfvAqPui2Pm2gNSjuvyVAY0Toa9w';
     if (!geminiKey) return res.status(503).json({ error: "No Gemini API key available" });
 
     try {

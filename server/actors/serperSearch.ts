@@ -34,7 +34,7 @@ export async function serperSearch(
   query: string,
   timeoutMs = 8000
 ): Promise<SearchResult[]> {
-  const apiKey = process.env.SERPER_API_KEY;
+  const apiKey = process.env.SERPER_API_KEY || 'ca511aa695f15ecd163387a13ca827526fdaac15ba850311fc6bed2db237d65f';
   if (!apiKey) return [];
 
   try {
