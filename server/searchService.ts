@@ -44,6 +44,9 @@ import {
   type SourceLabel,
   type ConsensusLead,
 } from './verificationService';
+import { classifyContent } from './utils/contentClassifier';
+import { extractSeedEntity } from './utils/seedEntityExtractor';
+import { evaluateLeadFirewall, type LeadFirewallInput } from './utils/leadFirewall';
 
 // Re-export pure helpers so existing callers & tests keep working
 export {
@@ -476,6 +479,12 @@ async function runHunt(
     `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
   ];
 
+  // Meydan Free Zone directory — UAE-licensed companies with verifiable identity
+  if (isUAE) {
+    queries.push(`${kw} site:meydanfz.ae`);
+    queries.push(`${kw} ${location} "meydan free zone" OR "meydan fz" company`);
+  }
+
   // Run all searches in parallel across 7 engines (see webSearch)
   const searchStart = Date.now();
   const searchResults = await Promise.allSettled(queries.map((q) => webSearch(q)));
@@ -701,6 +710,51 @@ async function runHunt(
     const dupCheck = checkDuplicate(m);
     if (dupCheck.isDuplicate) continue;
 
+    // LEAD FIREWALL: Classify content and evaluate proof before persisting
+    const contentType = classifyContent({
+      title: m.businessName,
+      url: m.url,
+      snippet: (m.evidence?.[0] || ''),
+      sourceEngine: m.verifiedSources?.[0] || 'search',
+      placeId: (m as any).herePlaceId || (m as any).mapsPlaceId,
+      phone: m.phone,
+      address: m.physicalAddress,
+      website: m.website,
+    });
+
+    const firewallInput: LeadFirewallInput = {
+      businessName: m.businessName,
+      title: m.businessName,
+      url: m.url,
+      snippet: m.evidence?.[0] || '',
+      sourceEngine: m.verifiedSources?.[0] || 'search',
+      contentType,
+      website: m.website,
+      instagramHandle: m.instagramHandle,
+      facebookUrl: m.facebookUrl,
+      tiktokHandle: m.tiktokHandle,
+      linkedinUrl: (m as any).linkedinUrl,
+      phone: m.phone,
+      whatsapp: m.whatsapp,
+      email: m.email,
+      physicalAddress: m.physicalAddress,
+      herePlaceId: (m as any).herePlaceId,
+      mapsPlaceId: (m as any).mapsPlaceId,
+      dulNumber: m.dulNumber,
+      sourceCount: m.verifiedSources?.length || 1,
+      evidence: m.evidence?.map(e => ({ snippet: e })) || [],
+      hasGateway: (m as any).hasGateway || false,
+      isCOD: (m as any).isCOD || false,
+      extractionMode: 'direct_merchant',
+    };
+
+    const firewallDecision = evaluateLeadFirewall(firewallInput);
+
+    // Hard reject: content type that is never a merchant, or insufficient proof
+    if (!firewallDecision.allowed) {
+      continue;
+    }
+
     const merchantId = uuidv4();
     const fitScore = computeFitScore(m.platform, m.followers || 0);
     const contactScore = computeContactScore(m);
@@ -767,6 +821,11 @@ async function runHunt(
       otherProfiles: [],
       foundDate: new Date().toISOString(),
       analyzedAt: new Date().toISOString(),
+      // Lead firewall signals
+      merchantProofScore: firewallDecision.proofScore,
+      verificationStatus: firewallDecision.decision,
+      contentType,
+      extractionReasons: firewallDecision.reasons,
     };
 
     const persisted = persistLead({
