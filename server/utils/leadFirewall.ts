@@ -147,8 +147,8 @@ export function cleanBusinessName(value?: string): string {
     .replace(/\s+/g, ' ')
     .trim();
 
-  // Title case
-  return name.replace(/\b\w/g, (c) => c.toUpperCase());
+  // Title case — avoid capitalising the letter after an apostrophe (Tom's → Tom's not Tom'S)
+  return name.replace(/(?<!['''])\b\w/g, (c) => c.toUpperCase());
 }
 
 export function isBadBusinessName(name?: string): boolean {
