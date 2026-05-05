@@ -422,6 +422,8 @@ interface SearchParams {
   // (Stripe/Tap/PayTabs/Checkout/etc.) since those aren't MyFatoorah prospects.
   // Default true — this is a MyFatoorah lead hunter.
   onlyQualified?: boolean;
+  // Hunter specialisation: generates query templates tuned to the use-case
+  hunterType?: 'payment_link' | 'pos' | 'general';
 }
 
 export async function huntMerchants(
@@ -462,7 +464,7 @@ async function runHunt(
   runId: string,
   onProgress?: (count: number, stage?: string) => void
 ) {
-  const { location, maxResults = 25, onlyQualified = true } = params;
+  const { location, maxResults = 25, onlyQualified = true, hunterType = 'general' } = params;
   // Use provided keywords or fall back to broad UAE merchant terms so Hunt works with empty input
   const kw = (params.keywords || '').trim() || 'boutique shop store brand';
 
@@ -470,14 +472,38 @@ async function runHunt(
     location
   );
 
-  // Queries target merchants who sell via COD/WhatsApp/Instagram DM — prime MyFatoorah candidates.
-  const queries: string[] = [
-    `${kw} ${location} "cash on delivery" OR "pay on delivery" whatsapp`,
-    `${kw} ${location} site:instagram.com "dm to order" OR "whatsapp to order"`,
-    `${kw} ${location} "order on whatsapp" OR "bank transfer" buy online`,
-    `${kw} ${location} instagram shop small business cod contact`,
-    `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
-  ];
+  let queries: string[];
+
+  if (hunterType === 'payment_link') {
+    // Payment Link Hunter — finds merchants collecting money manually via WhatsApp/DM/bank
+    // All queries explicitly target manual-payment signals; zero mentions of existing gateways.
+    queries = [
+      `${kw} ${location} "whatsapp to pay" OR "send bank details" OR "payment request" instagram`,
+      `${kw} ${location} site:instagram.com "dm to order" OR "whatsapp to order" OR "cash on delivery"`,
+      `${kw} ${location} "email invoice" OR "send invoice" OR "pay on delivery" shop contact`,
+      `${kw} ${location} "order via whatsapp" OR "bank transfer only" OR "collect on delivery" small business`,
+      `${kw} ${location} instagram online shop "no website" OR "dm us" OR "message to buy"`,
+      `${kw} ${location} freelancer consultant "payment request" OR "invoice" OR "bank transfer" service`,
+    ];
+  } else if (hunterType === 'pos') {
+    // POS Hunter — targets brick-and-mortar cash counters wanting smart POS
+    queries = [
+      `${kw} ${location} "cash only" OR "cash counter" OR "no card" cafe restaurant shop`,
+      `${kw} ${location} "cash payment" OR "cash accepted" OR "atm nearby" small business`,
+      `${kw} ${location} cafeteria cafes restaurant "cash only" OR "we accept cash" contact`,
+      `${kw} ${location} retail shop salon spa "cash payment" OR "no card machine"`,
+      `${kw} ${location} "we only accept cash" OR "cash transactions only" business`,
+    ];
+  } else {
+    // General Hunt — broad COD/WhatsApp/Instagram DM — prime MyFatoorah candidates.
+    queries = [
+      `${kw} ${location} "cash on delivery" OR "pay on delivery" whatsapp`,
+      `${kw} ${location} site:instagram.com "dm to order" OR "whatsapp to order"`,
+      `${kw} ${location} "order on whatsapp" OR "bank transfer" buy online`,
+      `${kw} ${location} instagram shop small business cod contact`,
+      `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
+    ];
+  }
 
   // Meydan Free Zone directory — UAE-licensed companies with verifiable identity
   if (isUAE) {

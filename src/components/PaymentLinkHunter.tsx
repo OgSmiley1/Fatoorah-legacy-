@@ -30,32 +30,40 @@ interface HunterAction {
 
 const DEFAULT_LOCATION = 'United Arab Emirates';
 
-const SYSTEM_PROMPT_PAYMENT = `You are the PAYMENT LINK HUNTER — specialized in finding businesses that still collect payments manually and would benefit from MyFatoorah Payment Links.
+const SYSTEM_PROMPT_PAYMENT = `You are the PAYMENT LINK HUNTER — an AI specialized exclusively in discovering merchants who still collect money manually and urgently need MyFatoorah Payment Links.
 
-Return ONLY JSON. No markdown. No explanation.
+Return ONLY valid JSON. No markdown. No explanation. No extra text.
 
-Target Signals:
-- WhatsApp order / DM to order
-- Email invoice / send invoice / payment request
-- Bank transfer / cash on delivery / pay on delivery
-- Instagram, TikTok, Facebook shops with manual checkout
-- Consultants, freelancers, agencies, home businesses, online sellers
+YOUR MISSION:
+Extract keywords for the specific merchant segment the user describes. Focus on niches that:
+• Take orders on WhatsApp, Instagram DM, TikTok DM, or Facebook Messenger
+• Send bank-transfer details, email invoices, or payment requests manually
+• Accept cash on delivery / pay on delivery / collect on delivery
+• Have no online checkout — just "DM to order" or "WhatsApp to buy"
+• Are freelancers, home businesses, boutiques, online sellers, service providers
 
-Avoid:
-- Stripe, PayPal, Telr, PayTabs, Checkout.com, Tap, Network International, HyperPay
-- PSP blogs, payment companies, directories, government pages
+SIGNAL WORDS TO INCLUDE IN KEYWORDS (pick relevant ones):
+whatsapp order | dm to order | email invoice | bank transfer | cash on delivery | payment request | pay on delivery | send details | order via whatsapp | contact to purchase
 
-JSON schema:
-{"action":"search","keywords":"merchant segment to search","location":"UAE city/country","type":"payment_link"}
+ABSOLUTE AVOIDS — never produce keywords that include:
+Stripe, PayPal, Telr, PayTabs, Checkout.com, Tap, HyperPay, Network International, payment gateway, PSP, fintech, news, blog, directory, scam, government, free zone, embed, visa payment, mastercard news
 
-For STATS:
-{"action":"stats","keywords":"","location":"United Arab Emirates","type":"payment_link"}`;
+JSON schema — return exactly one of these:
+{"action":"search","keywords":"tightly scoped merchant keywords WITHOUT location","location":"specific UAE city or country","type":"payment_link"}
+{"action":"stats","keywords":"","location":"United Arab Emirates","type":"payment_link"}
+
+Examples of GOOD outputs:
+{"action":"search","keywords":"abaya boutique instagram whatsapp order cod","location":"Dubai","type":"payment_link"}
+{"action":"search","keywords":"home baker cake delivery payment request","location":"Abu Dhabi","type":"payment_link"}
+{"action":"search","keywords":"freelance graphic designer email invoice bank transfer","location":"United Arab Emirates","type":"payment_link"}`;
 
 const QUICK_SEARCHES = [
-  { label: '💌 Email Invoice Users', msg: 'consultants agencies service providers sending invoices by email' },
-  { label: '📲 WhatsApp Collectors', msg: 'instagram shops whatsapp to order cash on delivery' },
-  { label: '🛒 Manual Checkout Shops', msg: 'online boutiques dm to order bank transfer no checkout' },
-  { label: '💼 Freelance Services', msg: 'freelancers home businesses payment request whatsapp UAE' },
+  { label: '👗 Abaya & Fashion Boutiques', msg: 'abaya boutique fashion shop whatsapp order dm to buy' },
+  { label: '🎂 Home Bakers & Food', msg: 'home baker cake sweets food delivery whatsapp order cod' },
+  { label: '💄 Beauty & Salon Services', msg: 'salon spa nail lashes beauty service instagram book whatsapp' },
+  { label: '📦 Delivery & Logistics', msg: 'delivery courier parcel service cash on delivery bank transfer' },
+  { label: '💌 Email Invoice Senders', msg: 'consultant freelancer agency invoice email payment request' },
+  { label: '🖨️ Printing & Gifting', msg: 'custom printing gifts corporate merch whatsapp order bank transfer' },
 ];
 
 const LOCATION_HINTS = [
@@ -141,17 +149,11 @@ function parseAction(raw: string, input: string): HunterAction {
 }
 
 function buildPaymentLinkSearchParams(action: HunterAction): SearchParams {
-  const base = action.keywords || 'instagram shops whatsapp order cash on delivery';
-  const location = action.location || DEFAULT_LOCATION;
-
+  // The backend payment_link query templates already inject all manual-payment
+  // signal terms and gateway exclusions, so keywords stay focused on niche.
   return {
-    keywords: [
-      base,
-      location,
-      '"whatsapp to order" OR "dm to order" OR "cash on delivery" OR "pay on delivery" OR "bank transfer" OR "email invoice"',
-      '-stripe -paypal -paytabs -telr -"checkout.com" -"payment gateway"',
-    ].join(' '),
-    location,
+    keywords: action.keywords || 'instagram shops whatsapp order cash on delivery',
+    location: action.location || DEFAULT_LOCATION,
     maxResults: 25,
     onlyQualified: true,
     hunterType: 'payment_link',
@@ -185,17 +187,27 @@ async function askAiForAction(message: string, history: Message[]): Promise<Hunt
   }
 }
 
+// Rotate through default auto-hunt queries so each modal open feels fresh
+const AUTO_HUNT_DEFAULTS = [
+  { keywords: 'abaya boutique fashion instagram whatsapp order', location: 'Dubai' },
+  { keywords: 'home baker sweets delivery whatsapp cod', location: 'Abu Dhabi' },
+  { keywords: 'salon beauty nail lashes instagram book payment', location: 'Sharjah' },
+  { keywords: 'custom printing gifts corporate merch bank transfer', location: 'Dubai' },
+  { keywords: 'freelance photographer designer invoice email payment', location: 'United Arab Emirates' },
+];
+
 export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsFound, onClose }) => {
   const [messages, setMessages] = React.useState<Message[]>([
     {
       role: 'assistant',
-      content: '🔗 Payment Link Hunter ready. I will search for merchants using WhatsApp, DM, email invoices, COD, or bank transfer instead of a proper checkout.',
+      content: '🔗 Payment Link Hunter activated. I search exclusively for merchants collecting payments manually — WhatsApp orders, DM checkouts, email invoices, bank transfers, COD. Launching auto-hunt now...',
       timestamp: Date.now(),
     },
   ]);
 
   const [input, setInput] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+  const [hunted, setHunted] = React.useState(false);
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -203,38 +215,35 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  async function runHunter(text?: string) {
-    const msg = (text || input).trim();
+  // Auto-hunt with a rotating default on first open
+  React.useEffect(() => {
+    if (hunted) return;
+    setHunted(true);
+    const pick = AUTO_HUNT_DEFAULTS[Math.floor(Math.random() * AUTO_HUNT_DEFAULTS.length)];
+    runHunterWithAction({
+      action: 'search',
+      keywords: pick.keywords,
+      location: pick.location,
+      type: 'payment_link',
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    if (!msg || loading) return;
-
-    const userMsg: Message = {
-      role: 'user',
-      content: msg,
-      timestamp: Date.now(),
-    };
-
-    const nextMessages = [...messages, userMsg];
-
-    setMessages(nextMessages);
-    setInput('');
+  async function runHunterWithAction(action: HunterAction) {
+    if (loading) return;
     setLoading(true);
 
     try {
-      const action = await askAiForAction(msg, nextMessages);
-
       if (action.action === 'stats') {
         const stats = await geminiService.getStats();
-
         setMessages(prev => [
           ...prev,
           {
             role: 'assistant',
-            content: `📊 Pipeline now has ${stats.totalMerchants} merchants and ${stats.totalLeads} leads.`,
+            content: `📊 Pipeline: ${stats.totalMerchants} merchants · ${stats.totalLeads} leads tracked.`,
             timestamp: Date.now(),
           },
         ]);
-
         return;
       }
 
@@ -244,7 +253,7 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
         ...prev,
         {
           role: 'assistant',
-          content: `🚀 Running real Payment Link hunt: ${action.keywords} — ${action.location}.`,
+          content: `🚀 Hunting payment-link prospects — “${action.keywords}” in ${action.location}.\nUsing 9 search engines + UAE government sources. Firewall active: only verified merchants returned.`,
           timestamp: Date.now(),
         },
       ]);
@@ -252,13 +261,16 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
       const results = await geminiService.searchMerchants(searchParams);
       onResultsFound(results);
 
+      const codCount = results.filter(r => r.isCOD).length;
+      const noGateway = results.filter(r => !r.hasGateway).length;
+
       setMessages(prev => [
         ...prev,
         {
           role: 'assistant',
           content: results.length > 0
-            ? `✅ Found ${results.length} Payment Link prospects. I pushed them into the main results grid.`
-            : '⚠️ No clean Payment Link prospects found. Try a narrower niche like “abaya shops Dubai WhatsApp order”.',
+            ? `✅ ${results.length} verified Payment Link prospect${results.length !== 1 ? 's' : ''} found.\n• ${codCount} COD merchants  •  ${noGateway} with no payment gateway\nResults pushed to main grid. Type another niche to hunt more.`
+            : '⚠️ No verified payment-link prospects this round. Try a tighter niche: “abaya Dubai WhatsApp order” or “home baker Abu Dhabi COD”.',
           timestamp: Date.now(),
         },
       ]);
@@ -267,13 +279,24 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
         ...prev,
         {
           role: 'assistant',
-          content: `❌ Hunt failed: ${error?.message || 'unknown error'}. Check /api/stats runtime.lastError and server logs.`,
+          content: `❌ Hunt failed: ${error?.message || 'unknown error'}.`,
           timestamp: Date.now(),
         },
       ]);
     } finally {
       setLoading(false);
     }
+  }
+
+  async function runHunter(text?: string) {
+    const msg = (text || input).trim();
+    if (!msg || loading) return;
+
+    setMessages(prev => [...prev, { role: 'user', content: msg, timestamp: Date.now() }]);
+    setInput('');
+
+    const action = await askAiForAction(msg, messages);
+    await runHunterWithAction(action);
   }
 
   return (
@@ -319,31 +342,31 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              className="flex items-center gap-2 text-slate-400 text-sm"
+              className="flex items-center gap-2 text-cyan-400 text-sm bg-slate-700/50 rounded-lg px-3 py-2"
             >
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Searching public payment-link signals...
+              <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+              <span>Scanning 9 engines for manual-payment merchants — firewall active…</span>
             </motion.div>
           )}
 
           <div ref={messagesEndRef} />
         </div>
 
-        {messages.length === 1 && (
-          <div className="px-4 py-2 border-t border-slate-700 bg-slate-900/50 max-h-28 overflow-y-auto">
-            <div className="grid grid-cols-1 gap-1 text-xs">
-              {QUICK_SEARCHES.map((q, i) => (
-                <button
-                  key={i}
-                  onClick={() => runHunter(q.msg)}
-                  className="text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-                >
-                  {q.label}
-                </button>
-              ))}
-            </div>
+        <div className="px-4 py-2 border-t border-slate-700 bg-slate-900/50 max-h-32 overflow-y-auto">
+          <p className="text-xs text-slate-500 mb-1">Quick niches:</p>
+          <div className="grid grid-cols-2 gap-1 text-xs">
+            {QUICK_SEARCHES.map((q, i) => (
+              <button
+                key={i}
+                disabled={loading}
+                onClick={() => runHunter(q.msg)}
+                className="text-left px-2 py-1 rounded hover:bg-slate-700 text-slate-300 hover:text-white disabled:opacity-40 transition-colors truncate"
+              >
+                {q.label}
+              </button>
+            ))}
           </div>
-        )}
+        </div>
 
         <div className="border-t border-slate-700 p-3 bg-slate-900 rounded-b-lg flex gap-2">
           <div className="relative flex-1">
