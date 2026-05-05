@@ -499,9 +499,41 @@ async function startServer() {
       }
     }
 
-    res.status(503).json({
-      response: "No AI provider is available. Set GEMINI_API_KEY, GROK_API_KEY, or GROQ_API_KEY in your .env file.",
-      provider: 'none'
+    // Rule-based fallback — works even with zero AI keys configured.
+    // Extract keywords from the message and detect location so hunts still fire.
+    const lower = message.toLowerCase();
+    const LOCATION_MAP: [RegExp, string][] = [
+      [/\bdubai\b/i, 'Dubai'],
+      [/\babu.?dhabi\b/i, 'Abu Dhabi'],
+      [/\bsharjah\b/i, 'Sharjah'],
+      [/\bajman\b/i, 'Ajman'],
+      [/\bfujairah\b/i, 'Fujairah'],
+      [/\bras.?al.?khaimah\b/i, 'Ras Al Khaimah'],
+      [/\bumm.?al.?quwain\b/i, 'Umm Al Quwain'],
+      [/\bal.?ain\b/i, 'Al Ain'],
+      [/\b(uae|emirates)\b/i, 'United Arab Emirates'],
+      [/\bsaudi\b|\bksa\b/i, 'Saudi Arabia'],
+      [/\bkuwait\b/i, 'Kuwait'],
+      [/\bqatar\b/i, 'Qatar'],
+      [/\bbahrain\b/i, 'Bahrain'],
+      [/\boman\b/i, 'Oman'],
+      [/\bgcc\b/i, 'GCC'],
+    ];
+    const detectedLocation = LOCATION_MAP.find(([re]) => re.test(message))?.[1] || 'United Arab Emirates';
+    const isStats = /\b(stats|pipeline|numbers|count|how many|total)\b/i.test(lower);
+    if (isStats) {
+      return res.json({ response: '{"action":"stats"}', provider: 'rule-based' });
+    }
+    // Strip location and filler words, keep the substance as keywords
+    const keywords = message
+      .replace(/\b(find|hunt|search|locate|discover|show|get|me|please|some|all|for|around|near|in|at|the|a|an)\b/gi, ' ')
+      .replace(new RegExp(detectedLocation, 'gi'), ' ')
+      .replace(/\bUAE\b|\bGCC\b|\bemiratesb/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || 'instagram shop whatsapp order cash on delivery';
+    return res.json({
+      response: JSON.stringify({ action: 'search', keywords, location: detectedLocation }),
+      provider: 'rule-based',
     });
   });
 

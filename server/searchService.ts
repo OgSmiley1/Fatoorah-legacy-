@@ -734,7 +734,53 @@ async function runHunt(
     if (onlyQualified && (m as any).hasGateway) continue;
 
     const dupCheck = checkDuplicate(m);
-    if (dupCheck.isDuplicate) continue;
+    if (dupCheck.isDuplicate) {
+      // Surface existing merchant as SEEN_BEFORE so repeat searches still return results.
+      // Fetch the full persisted row so scores and contact info are accurate.
+      if (dupCheck.existingMerchantId && finalMerchants.length < maxResults) {
+        const existing = db.prepare(
+          `SELECT m.*, l.id as lead_id, l.status as lead_status
+           FROM merchants m LEFT JOIN leads l ON l.merchant_id = m.id
+           WHERE m.id = ? ORDER BY l.created_at DESC LIMIT 1`
+        ).get(dupCheck.existingMerchantId) as any;
+        if (existing) {
+          const safeJson = (s: string | null, fallback: any) => {
+            if (!s) return fallback;
+            try { return JSON.parse(s); } catch { return fallback; }
+          };
+          const meta = safeJson(existing.metadata_json, {});
+          finalMerchants.push({
+            id: existing.id,
+            businessName: existing.business_name,
+            platform: existing.source_platform,
+            url: existing.source_url,
+            website: existing.website,
+            instagramHandle: existing.instagram_handle,
+            facebookUrl: existing.facebook_url,
+            tiktokHandle: existing.tiktok_handle,
+            phone: existing.phone,
+            whatsapp: existing.whatsapp,
+            email: existing.email,
+            physicalAddress: existing.physical_address,
+            dulNumber: existing.dul_number,
+            followers: existing.followers,
+            category: existing.category,
+            confidenceScore: existing.confidence_score,
+            contactScore: existing.contactability_score,
+            fitScore: existing.myfatoorah_fit_score,
+            qualityScore: existing.quality_score,
+            reliabilityScore: existing.reliability_score,
+            complianceScore: existing.compliance_score,
+            evidence: safeJson(existing.evidence_json, []),
+            contactValidation: safeJson(existing.contact_validation_json, {}),
+            status: 'SEEN_BEFORE',
+            leadId: existing.lead_id,
+            ...meta,
+          });
+        }
+      }
+      continue;
+    }
 
     // LEAD FIREWALL: Classify content and evaluate proof before persisting
     const contentType = classifyContent({

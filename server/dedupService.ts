@@ -19,8 +19,17 @@ export function merchantCanonicalId(merchant: {
 
 export function normalizePhone(phone: string): string | null {
   if (!phone) return null;
-  const cleaned = phone.replace(/[\s\-\(\)]/g, '');
-  return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
+  const cleaned = phone.replace(/[\s\-\(\)\.]/g, '');
+  if (!cleaned || cleaned.length < 7) return null;
+  // UAE local: 05xxxxxxxx → +97105xxxxxxxx
+  if (/^05\d{8}$/.test(cleaned)) return `+971${cleaned.slice(1)}`;
+  // UAE without country code: 971 + 9 digits
+  if (/^971\d{9}$/.test(cleaned)) return `+${cleaned}`;
+  // 00971 prefix
+  if (/^00971\d{9}$/.test(cleaned)) return `+${cleaned.slice(2)}`;
+  // Already E.164
+  if (cleaned.startsWith('+')) return cleaned;
+  return `+${cleaned}`;
 }
 
 export function normalizeEmail(email: string): string | null {
