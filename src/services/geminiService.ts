@@ -18,6 +18,7 @@ export const geminiService = {
           location: params.location,
           maxResults: params.maxResults,
           onlyQualified: params.onlyQualified ?? true,
+          hunterType: params.hunterType,
         })
       });
 

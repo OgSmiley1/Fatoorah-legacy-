@@ -528,7 +528,7 @@ async function startServer() {
     const keywords = message
       .replace(/\b(find|hunt|search|locate|discover|show|get|me|please|some|all|for|around|near|in|at|the|a|an)\b/gi, ' ')
       .replace(new RegExp(detectedLocation, 'gi'), ' ')
-      .replace(/\bUAE\b|\bGCC\b|\bemiratesb/gi, ' ')
+      .replace(/\bUAE\b|\bGCC\b|\bemirates\b/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim() || 'instagram shop whatsapp order cash on delivery';
     return res.json({
