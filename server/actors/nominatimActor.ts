@@ -4,11 +4,11 @@
 // and contact info when available.
 //
 // Pure parser is exported separately so tests don't hit the network.
+// Production rule: never hardcode API keys. If HERE_API_KEY is missing,
+// searchNominatim returns [] and the wider hunt continues with other engines.
 
 import axios from 'axios';
 import { logger } from '../logger';
-
-const HERE_API_KEY = process.env.HERE_API_KEY || '94BvpsaPaMq4aH6kUvTlbApyAV68BWw_s8sqh60d-u4';
 
 export interface NominatimPlace {
   name: string;
@@ -113,6 +113,12 @@ interface SearchOpts {
 }
 
 export async function searchNominatim(opts: SearchOpts): Promise<NominatimPlace[]> {
+  const apiKey = process.env.HERE_API_KEY;
+  if (!apiKey) {
+    logger.debug('here_geocode_skipped_missing_key', { query: opts.query });
+    return [];
+  }
+
   const {
     query,
     countryCode = 'AE',
@@ -128,7 +134,7 @@ export async function searchNominatim(opts: SearchOpts): Promise<NominatimPlace[
         q: query,
         in: `countryCode:${countryCode.toUpperCase()}`,
         limit,
-        apiKey: HERE_API_KEY,
+        apiKey,
       },
       headers: {
         Accept: 'application/json',
