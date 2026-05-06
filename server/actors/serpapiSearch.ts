@@ -1,20 +1,15 @@
 // server/actors/serpapiSearch.ts
-// SerpApi — Google Search via JSON. Free tier: 100 searches/month.
-// Cost-minimization measures:
-//   1. Uses `google_light` engine (lower credit cost per call than `google`).
-//   2. In-memory LRU cache (1-hour TTL, 200 entries) — repeated queries
-//      within a session cost zero credits.
-//   3. Soft monthly quota guard (default 100, override with
-//      SERPAPI_MONTHLY_LIMIT). Stops calling once exhausted.
-//
-// Reads SERPAPI_API_KEY from env; falls back to embedded default.
+// SerpApi — Google Search via JSON.
+// Production rules:
+//   1. Never hardcode API keys.
+//   2. Read SERPAPI_KEY first, then legacy SERPAPI_API_KEY.
+//   3. Return [] when no key/quota/error so the full hunt never crashes.
+//   4. Parse both organic results and local place results.
+//   5. Cache repeated queries for 1 hour to protect free-tier credits.
 
 import axios from 'axios';
 import type { SearchResult } from '../searchParsers';
 import { logger } from '../logger';
-
-const DEFAULT_API_KEY =
-  'ca511aa695f15ecd163387a13ca827526fdaac15ba850311fc6bed2db237d65f';
 
 interface CacheEntry {
   ts: number;
@@ -60,12 +55,57 @@ interface SerpApiOrganic {
   snippet?: string;
 }
 
+interface SerpApiLocalPlace {
+  title?: string;
+  type?: string;
+  address?: string;
+  phone?: string;
+  place_id?: string;
+  place_id_search?: string;
+  rating?: number;
+  reviews?: number;
+  gps_coordinates?: { latitude?: number; longitude?: number };
+}
+
 export function parseSerpApiResponse(raw: any): SearchResult[] {
   if (!raw || typeof raw !== 'object') return [];
+  const out: SearchResult[] = [];
+
+  const places: SerpApiLocalPlace[] = Array.isArray(raw.local_results?.places)
+    ? raw.local_results.places
+    : [];
+
+  for (const p of places) {
+    const title = p.title?.trim();
+    if (!title) continue;
+    const url = p.place_id_search || `https://serpapi.com/search.json?engine=google&q=${encodeURIComponent(title)}`;
+    const parts = [
+      p.type,
+      p.address,
+      p.phone,
+      p.rating ? `rating ${p.rating}` : '',
+      p.reviews ? `${p.reviews} reviews` : '',
+      p.gps_coordinates?.latitude && p.gps_coordinates?.longitude
+        ? `gps ${p.gps_coordinates.latitude},${p.gps_coordinates.longitude}`
+        : '',
+      p.place_id ? `place_id ${p.place_id}` : '',
+    ].filter(Boolean);
+
+    out.push({
+      url,
+      title,
+      description: parts.join(' — '),
+      businessName: title,
+      category: p.type,
+      placeId: p.place_id,
+      phone: p.phone,
+      physicalAddress: p.address,
+    } as any);
+  }
+
   const organic: SerpApiOrganic[] = Array.isArray(raw.organic_results)
     ? raw.organic_results
     : [];
-  const out: SearchResult[] = [];
   for (const r of organic) {
     const url = r.link;
     if (!url || !url.startsWith('http')) continue;
@@ -74,8 +114,9 @@ export function parseSerpApiResponse(raw: any): SearchResult[] {
       title: r.title?.trim() || '',
       description: r.snippet?.trim() || '',
     });
-    if (out.length >= 20) break;
+    if (out.length >= 30) break;
   }
+
   return out;
 }
 
@@ -83,8 +124,11 @@ export async function serpapiSearch(
   query: string,
   timeoutMs = 8000
 ): Promise<SearchResult[]> {
-  const apiKey = process.env.SERPAPI_API_KEY || DEFAULT_API_KEY;
-  if (!apiKey) return [];
+  const apiKey = process.env.SERPAPI_KEY || process.env.SERPAPI_API_KEY;
+  if (!apiKey) {
+    logger.debug('serpapi_skipped_missing_key', { query });
+    return [];
+  }
 
   const cached = cacheGet(query);
   if (cached) {
@@ -104,8 +148,10 @@ export async function serpapiSearch(
     const res = await axios.get('https://serpapi.com/search.json', {
       timeout: timeoutMs,
       params: {
-        engine: 'google_light',
+        engine: 'google',
         q: query,
+        location: 'Dubai, United Arab Emirates',
+        google_domain: 'google.com',
         gl: 'ae',
         hl: 'en',
         num: 20,
