@@ -108,6 +108,7 @@ export async function serpapiSearch(
         q: query,
         gl: 'ae',
         hl: 'en',
+        location: 'United Arab Emirates',
         num: 20,
         api_key: apiKey,
       },
