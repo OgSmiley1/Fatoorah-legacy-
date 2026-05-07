@@ -332,11 +332,11 @@ async function startServer() {
         m.facebook_url, m.tiktok_handle, m.physical_address,
         m.category, m.dul_number,
         m.confidence_score, m.contactability_score, m.myfatoorah_fit_score,
-        m.metadata_json, m.created_at,
+        m.metadata_json, m.first_seen as created_at,
         l.status as lead_status
       FROM merchants m
       LEFT JOIN leads l ON l.merchant_id = m.id
-      ORDER BY m.myfatoorah_fit_score DESC, m.created_at DESC
+      ORDER BY m.myfatoorah_fit_score DESC, m.first_seen DESC
       LIMIT 5000
     `).all() as any[];
 
