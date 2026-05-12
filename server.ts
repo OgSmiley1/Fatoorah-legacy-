@@ -13,6 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 import db from "./db";
 import { huntMerchants } from "./server/searchService";
 import { metrics } from "./server/metrics";
+import { buildProposal, type MerchantForProposal } from "./server/templates/proposalBuilder";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
 
 // SQLite-backed session store — no memory leaks, survives restarts
@@ -263,6 +264,59 @@ async function startServer() {
 
     db.prepare(sql).run(...params);
     res.json({ success: true });
+  });
+
+  // --- PROPOSAL GENERATOR ---
+  // Generate a fully-personalised MyFatoorah proposal + WhatsApp/email deep-links
+  // for one merchant. Reads from the merchants table; no AI call required.
+  app.get("/api/proposal/:merchantId", (req, res) => {
+    const { merchantId } = req.params;
+    const row = db.prepare(`
+      SELECT id, business_name, category, city, phone, whatsapp, email, website,
+             physical_address, estimated_revenue, payment_gateway, metadata_json
+      FROM merchants WHERE id = ?
+    `).get(merchantId) as any;
+
+    if (!row) return res.status(404).json({ error: 'merchant not found' });
+
+    let metadata: any = {};
+    try { metadata = row.metadata_json ? JSON.parse(row.metadata_json) : {}; } catch {}
+
+    const merchant: MerchantForProposal = {
+      id: row.id,
+      businessName: row.business_name,
+      category: row.category,
+      city: row.city,
+      phone: row.phone,
+      whatsapp: row.whatsapp,
+      email: row.email,
+      website: row.website,
+      physicalAddress: row.physical_address,
+      // Excel "Estimated Monthly Revenue" * 12 → annual; we already store annual.
+      // If only a monthly figure was stored, use as monthly and multiply by 12.
+      estimatedAnnualRevenueAed: Number(row.estimated_revenue) || Number(metadata.estimatedAnnualRevenueAed) || 0,
+      hasGateway: Boolean(metadata.hasGateway) || Boolean(row.payment_gateway),
+      paymentMethods: Array.isArray(metadata.paymentMethods) ? metadata.paymentMethods : [],
+    };
+
+    return res.json({ proposal: buildProposal(merchant) });
+  });
+
+  // Mark proposal sent on a lead. Stores when it went out + an optional URL
+  // (e.g. a hosted PDF if the UI uploads one).
+  app.post("/api/leads/:id/proposal-sent", (req, res) => {
+    const { id } = req.params;
+    const { proposal_url } = req.body || {};
+    const info = db.prepare(`
+      UPDATE leads
+         SET proposal_sent_at = CURRENT_TIMESTAMP,
+             proposal_url = COALESCE(?, proposal_url),
+             status = CASE WHEN status IN ('NEW', 'CONTACTED') THEN 'PROPOSAL_SENT' ELSE status END,
+             updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+    `).run(proposal_url || null, id);
+    if (info.changes === 0) return res.status(404).json({ error: 'lead not found' });
+    return res.json({ success: true });
   });
 
   // Apify-style dataset export — CSV and JSON

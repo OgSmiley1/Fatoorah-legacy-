@@ -165,7 +165,10 @@ const migrations = [
   { name: 'source_count', type: 'INTEGER DEFAULT 1' },
   { name: 'source_list', type: 'TEXT' },
   { name: 'followers', type: 'INTEGER' },
-  { name: 'canonical_id', type: 'TEXT' }
+  { name: 'canonical_id', type: 'TEXT' },
+  // Revenue band string ("< 500K AED" etc.) used by the proposal/tier engine.
+  // estimated_revenue already exists above; this just classifies it.
+  { name: 'revenue_band', type: 'TEXT' }
 ];
 
 for (const col of migrations) {
@@ -191,6 +194,24 @@ try {
   );
 } catch (e) {
   console.error('Failed to create canonical_id unique index:', e);
+}
+
+// Lead-side migrations for the proposal generator.
+const leadInfo = db.prepare("PRAGMA table_info(leads)").all() as any[];
+const leadColumnNames = leadInfo.map(c => c.name);
+const leadMigrations = [
+  { name: 'proposal_sent_at', type: 'TIMESTAMP' },
+  { name: 'proposal_url', type: 'TEXT' },
+];
+for (const col of leadMigrations) {
+  if (!leadColumnNames.includes(col.name)) {
+    try {
+      db.exec(`ALTER TABLE leads ADD COLUMN ${col.name} ${col.type}`);
+      console.log(`Migration: Added column ${col.name} to leads table`);
+    } catch (e) {
+      console.error(`Migration failed for leads.${col.name}:`, e);
+    }
+  }
 }
 
 export default db;

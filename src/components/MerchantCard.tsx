@@ -1,15 +1,16 @@
 import React from 'react';
 import { Merchant } from '../types';
-import { 
-  Mail, Phone, MessageCircle, Shield, TrendingUp, 
-  Copy, CheckCircle2, Loader2, 
+import {
+  Mail, Phone, MessageCircle, Shield, TrendingUp,
+  Copy, CheckCircle2, Loader2,
   Globe, Zap, Github, Facebook, MapPin,
-  Send, Instagram, Save
+  Send, Instagram, Save, FileText
 } from 'lucide-react';
 import { telegramService } from '../services/telegramService';
 import { motion, AnimatePresence } from 'motion/react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { ProposalModal, type ProposalPayload } from './ProposalModal';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -35,6 +36,35 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   const [tgSending, setTgSending] = React.useState(false);
   const [ghUpdates, setGhUpdates] = React.useState<any[]>([]);
   const [loadingGh, setLoadingGh] = React.useState(false);
+  const [proposal, setProposal] = React.useState<ProposalPayload | null>(null);
+  const [proposalLoading, setProposalLoading] = React.useState(false);
+  const [proposalError, setProposalError] = React.useState<string | null>(null);
+  const [showProposal, setShowProposal] = React.useState(false);
+
+  // Lazy-fetch the server-built proposal (WA/email deep-links + 10-section content)
+  // once per card mount when the merchant has an id. /api/proposal/:id is pure
+  // — no AI call — so this is cheap.
+  React.useEffect(() => {
+    if (!merchant.id || proposal || proposalLoading) return;
+    let cancelled = false;
+    setProposalLoading(true);
+    fetch(`/api/proposal/${encodeURIComponent(merchant.id)}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((data: { proposal: ProposalPayload }) => {
+        if (!cancelled) setProposal(data.proposal);
+      })
+      .catch((e) => {
+        if (!cancelled) setProposalError(e.message || 'Failed to load proposal');
+      })
+      .finally(() => {
+        if (!cancelled) setProposalLoading(false);
+      });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [merchant.id]);
 
   React.useEffect(() => {
     if (merchant.githubUrl) {
@@ -92,10 +122,30 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
   };
 
   const openWhatsApp = () => {
+    // Prefer the server-built deep-link (sector-keyed Arabic/English MyFatoorah pitch).
+    if (proposal?.whatsappUrl) {
+      window.open(proposal.whatsappUrl, '_blank');
+      return;
+    }
+    // Fallback to a generic English greeting if /api/proposal failed.
     if (!merchant.whatsapp) return;
     const cleanPhone = merchant.whatsapp.replace(/\D/g, '');
     const message = encodeURIComponent(`Hello ${merchant.businessName}, I saw your business on ${merchant.platform} and I'm interested in your products. Do you offer Cash on Delivery?`);
     window.open(`https://wa.me/${cleanPhone}?text=${message}`, '_blank');
+  };
+
+  const openEmail = () => {
+    if (proposal?.mailtoUrl) {
+      window.open(proposal.mailtoUrl, '_blank');
+      return;
+    }
+    if (!merchant.email) return;
+    window.open(`mailto:${merchant.email}`, '_blank');
+  };
+
+  const openProposal = () => {
+    if (!proposal) return;
+    setShowProposal(true);
   };
 
   const getScoreColor = (score: number) => {
@@ -444,18 +494,55 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             </>
           )}
           
+          {/* WhatsApp — pre-filled with sector-specific MyFatoorah pitch */}
           <button
             onClick={openWhatsApp}
-            disabled={!merchant.whatsapp}
+            disabled={!(proposal?.whatsappUrl) && !merchant.whatsapp}
             className={cn(
               "mission-control-button w-10 h-10",
-              !merchant.whatsapp ? "opacity-50 cursor-not-allowed" : "mission-control-button-secondary text-emerald-500"
+              !(proposal?.whatsappUrl) && !merchant.whatsapp
+                ? "opacity-50 cursor-not-allowed"
+                : "mission-control-button-secondary text-emerald-500"
             )}
-            title="Chat on WhatsApp"
+            title={proposal?.whatsappUrl ? "Open WhatsApp with pitch" : "No phone available"}
           >
             <MessageCircle size={16} />
           </button>
-          
+
+          {/* Email — pre-filled mailto with the full proposal email */}
+          <button
+            onClick={openEmail}
+            disabled={!(proposal?.mailtoUrl)}
+            className={cn(
+              "mission-control-button w-10 h-10",
+              !(proposal?.mailtoUrl)
+                ? "opacity-50 cursor-not-allowed"
+                : "mission-control-button-secondary text-blue-400"
+            )}
+            title={proposal?.mailtoUrl ? "Open email with proposal" : "No email available"}
+          >
+            <Mail size={16} />
+          </button>
+
+          {/* Proposal — opens the 10-section card with commercial analysis */}
+          <button
+            onClick={openProposal}
+            disabled={!proposal}
+            className={cn(
+              "mission-control-button w-10 h-10",
+              !proposal
+                ? "opacity-50 cursor-not-allowed"
+                : "mission-control-button-secondary text-amber-400"
+            )}
+            title={
+              proposalLoading ? "Loading proposal..." :
+              proposalError ? `Proposal unavailable: ${proposalError}` :
+              proposal ? "Generate Proposal" : "Proposal unavailable"
+            }
+          >
+            {proposalLoading ? <Loader2 className="animate-spin" size={16} /> : <FileText size={16} />}
+          </button>
+
           <button
             onClick={handleSendTelegram}
             disabled={tgSending}
@@ -463,11 +550,20 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               "mission-control-button w-10 h-10",
               copied === 'tg' ? "bg-blue-500 text-white" : "mission-control-button-secondary"
             )}
+            title="Forward to Telegram"
           >
-            {tgSending ? <Loader2 className="animate-spin" size={16} /> : 
+            {tgSending ? <Loader2 className="animate-spin" size={16} /> :
              copied === 'tg' ? <CheckCircle2 size={16} /> : <Send size={16} />}
           </button>
         </div>
+
+        {showProposal && proposal && (
+          <ProposalModal
+            proposal={proposal}
+            merchantName={merchant.businessName || 'Merchant'}
+            onClose={() => setShowProposal(false)}
+          />
+        )}
 
         {/* Expandable Sections */}
         <AnimatePresence>
