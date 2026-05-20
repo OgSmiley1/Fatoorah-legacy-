@@ -290,7 +290,7 @@ describe('buildConsensus', () => {
       phone: '501234567',
     },
     {
-      source: 'nominatim',
+      source: 'here-geocoding',
       businessName: 'Mall Abaya Boutique',
       website: 'https://abaya-boutique.ae',
       phone: '+9714123456',

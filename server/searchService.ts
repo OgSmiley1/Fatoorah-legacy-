@@ -6,7 +6,11 @@ import { checkDuplicate } from './dedupService';
 import { retrySafe, envInt } from './retry';
 import { metrics } from './metrics';
 import { persistLead } from './persistLead';
-import { computeFitScore, computeContactScore, computeConfidence } from './scoringService';
+import {
+  computeFitScore, computeContactScore, computeConfidence,
+  computeQualityScore, computeReliabilityScore, computeComplianceScore,
+  estimateRevenue,
+} from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
 import {
@@ -28,11 +32,14 @@ import { braveSearch } from './actors/braveSearch';
 import { startpageSearch } from './actors/startpageSearch';
 import { mojeekSearch } from './actors/mojeekSearch';
 import { searxSearch } from './actors/searxMetaSearch';
+import { serperSearch } from './actors/serperSearch';
+import { serpapiSearch } from './actors/serpapiSearch';
 import { verifyEmail } from './actors/emailVerifier';
 import { verifyWhatsApp } from './actors/whatsappVerifier';
 import {
   buildConsensus,
   identityKey,
+  normalizeHandle,
   type RawLead,
   type SourceLabel,
   type ConsensusLead,
@@ -132,7 +139,11 @@ export interface TaggedResult extends SearchResult {
   sources: SourceLabel[];
 }
 
-// Primary search: run 7 keyless engines in parallel, merge by URL, tag with sources.
+// Primary search: run up to 9 engines in parallel
+// (7 keyless + Serper/Google + SerpApi/Google).
+// Both Google APIs are skipped when their keys aren't configured.
+// SerpApi uses the cheaper `google_light` engine and caches per query
+// to keep credits low on the 100/month free tier.
 async function webSearch(query: string): Promise<TaggedResult[]> {
   const engines: { label: SourceLabel; fn: () => Promise<SearchResult[]> }[] = [
     { label: 'ddg',       fn: () => ddgHtmlSearch(query) },
@@ -142,6 +153,8 @@ async function webSearch(query: string): Promise<TaggedResult[]> {
     { label: 'startpage', fn: () => startpageSearch(query) },
     { label: 'mojeek',    fn: () => mojeekSearch(query) },
     { label: 'searx',     fn: () => searxSearch(query) },
+    { label: 'serper',    fn: () => serperSearch(query) },
+    { label: 'serpapi',   fn: () => serpapiSearch(query) },
   ];
 
   const settled = await Promise.allSettled(engines.map(e => e.fn()));
@@ -282,7 +295,7 @@ export async function enrichMerchantContacts(m: any) {
       m.phone = m.phone || webContacts.phone || null;
       m.email = m.email || webContacts.email || null;
       m.whatsapp = m.whatsapp || webContacts.whatsapp || null;
-      m.instagramHandle = m.instagramHandle || webContacts.instagram || null;
+      m.instagramHandle = m.instagramHandle || normalizeHandle(webContacts.instagram) || null;
       m.facebookUrl = m.facebookUrl || webContacts.facebook || null;
       m.tiktokHandle = m.tiktokHandle || webContacts.tiktok || null;
 
@@ -309,7 +322,7 @@ export async function enrichMerchantContacts(m: any) {
         for (const link of s.sameAs || []) {
           if (!m.instagramHandle && /instagram\.com\//i.test(link)) {
             const h = link.match(/instagram\.com\/([a-zA-Z0-9._]+)/i);
-            if (h) m.instagramHandle = h[1];
+            if (h) m.instagramHandle = normalizeHandle(h[1]);
           }
           if (!m.facebookUrl && /facebook\.com\//i.test(link)) m.facebookUrl = link;
           if (!m.tiktokHandle && /tiktok\.com\/@/i.test(link)) {
@@ -484,14 +497,14 @@ async function runHunt(
     }
   }
 
-  // Run InvestInDubai + OSM Nominatim in parallel — both are UAE-only sources
+  // Run InvestInDubai + HERE Geocoding in parallel — both are UAE-only sources
   if (isUAE) {
     const govSources = await Promise.allSettled([
       withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
       withTimeout(
         searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
         9_000,
-        'nominatim'
+        'here-geocoding'
       ),
     ]);
 
@@ -525,10 +538,10 @@ async function runHunt(
 
     if (govSources[1].status === 'fulfilled') {
       for (const p of govSources[1].value) {
-        const url = p.website || `https://www.openstreetmap.org/${p.osmType}/${p.osmId}`;
+        const url = p.website || `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(p.displayName)}`;
         const existing = urlVotes.get(url);
         if (existing) {
-          if (!existing.sources.includes('nominatim')) existing.sources.push('nominatim');
+          if (!existing.sources.includes('here-geocoding')) existing.sources.push('here-geocoding');
         } else {
           urlVotes.set(url, {
             url,
@@ -536,12 +549,12 @@ async function runHunt(
             description: `${p.category} — ${p.displayName}${p.phone ? ` — ${p.phone}` : ''}`,
             businessName: p.name,
             category: p.category,
-            sources: ['nominatim'],
+            sources: ['here-geocoding'],
           });
         }
       }
     } else {
-      logger.debug('nominatim_skipped', { error: (govSources[1] as any).reason?.message });
+      logger.debug('here_geocoding_skipped', { error: (govSources[1] as any).reason?.message });
     }
   }
 
@@ -582,7 +595,7 @@ async function runHunt(
     let instagramHandle: string | null = null;
     if (platform === 'instagram') {
       const m = result.url.match(/instagram\.com\/([^\/\?]+)/);
-      if (m) instagramHandle = m[1];
+      if (m) instagramHandle = normalizeHandle(m[1]);
     }
 
     const phoneMatch = snippet.match(PHONE_RE);
@@ -692,6 +705,15 @@ async function runHunt(
     const fitScore = computeFitScore(m.platform, m.followers || 0);
     const contactScore = computeContactScore(m);
     const confidenceScore = computeConfidence(m);
+    const qualityScore = computeQualityScore(m);
+    const reliabilityScore = computeReliabilityScore(m);
+    const complianceScore = computeComplianceScore(m);
+    const revenueEst = estimateRevenue({
+      followers: m.followers,
+      platform: m.platform,
+      category: m.category,
+      isCOD: (m as any).isCOD,
+    });
     const contactValidation = m.contactValidation || {
       status: m.phone || m.email ? 'VERIFIED' : 'UNVERIFIED',
       sources: ['Scraper', m.platform],
@@ -722,7 +744,7 @@ async function runHunt(
         factors: ['New discovery'],
       },
       scripts: { arabic: '', english: '', whatsapp: '', instagram: '' },
-      revenue: { monthly: 0, annual: 0 },
+      revenue: { monthly: revenueEst.monthly, annual: revenueEst.annual, basis: revenueEst.basis },
       pricing: { setupFee: 0, transactionRate: '2.5%', settlementCycle: 'T+1' },
       roi: {
         feeSavings: 0,
@@ -755,6 +777,9 @@ async function runHunt(
       confidenceScore,
       contactScore,
       fitScore: adjustedFitScore,
+      qualityScore,
+      reliabilityScore,
+      complianceScore,
       contactValidation,
       metadata,
     });

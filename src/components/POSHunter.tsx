@@ -72,6 +72,28 @@ export const POSHunter: React.FC<POSHunterProps> = ({ onResultsFound, onClose })
     setInput('');
     setLoading(true);
 
+    const runSearch = async (keywords: string, location: string) => {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `🚀 Hunting for **${keywords}** in **${location}**...\n\nScanning for physical retail locations ready for POS upgrade.`,
+        timestamp: Date.now()
+      }]);
+      const searchRes = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keywords, location, maxResults: 50, onlyQualified: true })
+      });
+      if (!searchRes.ok) throw new Error('Search API failed');
+      const searchData = await searchRes.json();
+      const merchants = searchData.merchants || [];
+      onResultsFound(merchants);
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `✅ Found **${merchants.length}** potential POS upgrade candidates!`,
+        timestamp: Date.now()
+      }]);
+    };
+
     try {
       const res = await fetch('/api/ai-chat', {
         method: 'POST',
@@ -83,9 +105,8 @@ export const POSHunter: React.FC<POSHunterProps> = ({ onResultsFound, onClose })
         })
       });
 
-      if (!res.ok) throw new Error('Server error');
-
-      const data = await res.json();
+      // Parse response whether ok or not (fallback returns 200 always now)
+      const data = await res.json().catch(() => ({ response: '' }));
       const responseText: string = data.response || '';
 
       const jsonMatch = responseText.match(/\{[\s\S]*?"action"[\s\S]*?\}/);
@@ -93,71 +114,30 @@ export const POSHunter: React.FC<POSHunterProps> = ({ onResultsFound, onClose })
         try {
           const action = JSON.parse(jsonMatch[0]);
           if (action.action === 'search' && action.keywords) {
-            setMessages(prev => [...prev, {
-              role: 'assistant',
-              content: `🚀 Hunting for **${action.keywords}** in **${action.location || 'UAE'}**...\n\nLooking for physical retail locations with outdated POS systems ready for upgrade.`,
-              timestamp: Date.now()
-            }]);
-            // Actually run the hunt — previously this dropped `[]` and never
-            // hit /api/search, so the chat said "hunting…" but no merchants
-            // ever made it to the dashboard.
-            try {
-              const huntRes = await fetch('/api/search', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  keywords: action.keywords,
-                  location: action.location || 'UAE',
-                  maxResults: action.maxResults || 25,
-                  onlyQualified: true,
-                }),
-              });
-              if (huntRes.ok) {
-                const huntData = await huntRes.json();
-                const found: any[] = Array.isArray(huntData.merchants) ? huntData.merchants : [];
-                onResultsFound(found);
-                setMessages(prev => [...prev, {
-                  role: 'assistant',
-                  content: found.length
-                    ? `✅ Found **${found.length}** POS prospects (${huntData.newLeadsCount ?? found.length} new). They're on the dashboard now.`
-                    : `⚠️ Hunt finished but no qualified POS prospects came back. Try different keywords or widen the location.`,
-                  timestamp: Date.now()
-                }]);
-              } else {
-                setMessages(prev => [...prev, {
-                  role: 'assistant',
-                  content: `❌ Hunt failed (HTTP ${huntRes.status}). Check server logs.`,
-                  timestamp: Date.now()
-                }]);
-              }
-            } catch (huntErr: any) {
-              setMessages(prev => [...prev, {
-                role: 'assistant',
-                content: `❌ Hunt failed: ${huntErr?.message || 'network error'}`,
-                timestamp: Date.now()
-              }]);
-            }
+            await runSearch(action.keywords, action.location || 'UAE');
+          } else {
+            setMessages(prev => [...prev, { role: 'assistant', content: responseText, timestamp: Date.now() }]);
           }
-        } catch (e) {
-          setMessages(prev => [...prev, {
-            role: 'assistant',
-            content: responseText || 'Search initiated.',
-            timestamp: Date.now()
-          }]);
+        } catch {
+          await runSearch(msg.slice(0, 80), 'UAE');
         }
+      } else if (responseText) {
+        setMessages(prev => [...prev, { role: 'assistant', content: responseText, timestamp: Date.now() }]);
       } else {
+        // No AI response at all — search directly with the user's message
+        await runSearch(msg.slice(0, 80), 'UAE');
+      }
+    } catch (error) {
+      // Network-level failure — still attempt a direct search
+      try {
+        await runSearch(msg.slice(0, 80), 'UAE');
+      } catch {
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: responseText,
+          content: '⚠️ Server is starting up, please try again in a moment.',
           timestamp: Date.now()
         }]);
       }
-    } catch (error) {
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: '❌ Connection error. Check server status.',
-        timestamp: Date.now()
-      }]);
     } finally {
       setLoading(false);
     }

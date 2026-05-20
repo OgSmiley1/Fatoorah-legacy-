@@ -15,6 +15,11 @@ import { huntMerchants } from "./server/searchService";
 import { metrics } from "./server/metrics";
 import { buildProposal, type MerchantForProposal } from "./server/templates/proposalBuilder";
 import { initWhatsAppBot, getWAStatus, sendWAMessage } from "./server/whatsappBot";
+import {
+  computeQualityScore, computeReliabilityScore, computeComplianceScore,
+  estimateRevenue, computeRiskAssessment, computeContactScore, computeConfidence,
+  calculateMyFatoorahOffer
+} from "./server/scoringService";
 
 // SQLite-backed session store — no memory leaks, survives restarts
 class SqliteStore extends session.Store {
@@ -216,6 +221,51 @@ async function startServer() {
     };
     const processedLeads = leads.map(l => {
       const metadata = safeParseJson(l.metadata_json, {});
+
+      // Normalised merchant shape for scoring functions
+      const mForScoring = {
+        phone: l.phone,
+        physicalAddress: l.physical_address,
+        dulNumber: l.dul_number,
+        instagramHandle: l.instagram_handle,
+        facebookUrl: l.facebook_url,
+        tiktokHandle: l.tiktok_handle,
+        telegramHandle: l.telegram_handle,
+        url: l.source_url,
+        platform: l.source_platform,
+        category: l.category,
+        followers: l.followers ?? null,
+        isCOD: Boolean(metadata.isCOD),
+        email: l.email,
+        whatsapp: l.whatsapp,
+        evidence: safeParseJson(l.evidence_json, []),
+      };
+
+      // Use stored scores when present; compute live for old rows
+      const qualityScore = l.quality_score || computeQualityScore(mForScoring);
+      const reliabilityScore = l.reliability_score || computeReliabilityScore(mForScoring);
+      const complianceScore = l.compliance_score || computeComplianceScore(mForScoring);
+
+      // Persist computed scores back to DB so next fetch is instant
+      if (!l.quality_score || !l.reliability_score || !l.compliance_score) {
+        try {
+          db.prepare(
+            `UPDATE merchants SET quality_score=?, reliability_score=?, compliance_score=? WHERE id=?`
+          ).run(qualityScore, reliabilityScore, complianceScore, l.merchant_id || l.id);
+        } catch {}
+      }
+
+      // Revenue — use stored value or compute live
+      const revenueEst = (metadata.revenue?.monthly != null && metadata.revenue.monthly > 0)
+        ? metadata.revenue
+        : estimateRevenue({ followers: mForScoring.followers, platform: mForScoring.platform, category: mForScoring.category, isCOD: mForScoring.isCOD });
+
+      // Risk, scores and offer — live compute if not stored
+      const risk = (metadata.risk?.category) ? metadata.risk : computeRiskAssessment(mForScoring);
+      const contactScore = l.contactability_score || computeContactScore(mForScoring);
+      const confidenceScore = l.confidence_score || computeConfidence(mForScoring);
+      const pricing = (metadata.pricing?.transactionRate) ? metadata.pricing : calculateMyFatoorahOffer(mForScoring, risk, revenueEst);
+
       return {
         ...l,
         ...metadata,
@@ -225,9 +275,12 @@ async function startServer() {
         url: l.source_url,
         subCategory: l.subcategory,
         instagramHandle: l.instagram_handle,
-        confidenceScore: l.confidence_score,
-        contactScore: l.contactability_score,
+        confidenceScore,
+        contactScore,
         fitScore: l.myfatoorah_fit_score,
+        qualityScore,
+        reliabilityScore,
+        complianceScore,
         dulNumber: l.dul_number,
         facebookUrl: l.facebook_url,
         twitterHandle: l.twitter_handle,
@@ -235,6 +288,9 @@ async function startServer() {
         tiktokHandle: l.tiktok_handle,
         telegramHandle: l.telegram_handle,
         physicalAddress: l.physical_address,
+        revenue: revenueEst,
+        risk,
+        pricing,
         contactValidation: safeParseJson(l.contact_validation_json, { status: 'UNVERIFIED', sources: [] }),
         evidence: safeParseJson(l.evidence_json, [])
       };
@@ -504,9 +560,20 @@ async function startServer() {
       }
     }
 
-    res.status(503).json({
-      response: "No AI provider is available. Set GEMINI_API_KEY, GROK_API_KEY, or GROQ_API_KEY in your .env file.",
-      provider: 'none'
+    // Rule-based fallback — always returns a usable search action so hunters never break
+    const stopWords = new Set(['find','search','for','the','and','in','of','with','that','are','have','need','using','about','looking','want','show','me','us','give','get','all','any','some','can','will','please','help','from','to','a','an','is','it','do','be','or','on','at','by','its','we','i']);
+    const keywords = message
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w: string) => w.length > 3 && !stopWords.has(w))
+      .slice(0, 6)
+      .join(' ') || message.slice(0, 60);
+    const locationMatch = message.match(/\b(dubai|abu dhabi|sharjah|ajman|uae|kuwait|saudi|ksa|qatar|bahrain)\b/i);
+    const location = locationMatch ? locationMatch[0] : 'UAE';
+    return res.json({
+      response: JSON.stringify({ action: 'search', keywords, location }),
+      provider: 'fallback'
     });
   });
 

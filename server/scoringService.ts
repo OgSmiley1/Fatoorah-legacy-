@@ -22,29 +22,49 @@ export function computeFitScore(platform: string, followers: number | null): num
 
 export function computeQualityScore(m: any): number {
   let score = 0;
-  if (m.url && m.platform === 'website') score += 40;
-  // Don't collapse if followers are null, just give a smaller bonus
+
+  // Website presence
+  if (m.url && m.platform === 'website') score += 35;
+  else if (m.url) score += 15;
+
+  // Instagram (highest commerce signal)
   if (m.instagramHandle) {
-    if (m.followers === null) score += 15;
-    else if (m.followers > 1000) score += 30;
-    else if (m.followers > 100) score += 10;
+    if (m.followers == null) score += 15;
+    else if (m.followers > 10000) score += 35;
+    else if (m.followers > 1000) score += 25;
+    else if (m.followers > 100) score += 15;
+    else score += 10;
   }
-  if (m.isCOD) score += 30;
+
+  // Other social channels
+  if (m.tiktokHandle) score += 15;
+  if (m.facebookUrl) score += 10;
+  if (m.telegramHandle) score += 8;
+
+  // Contact signals that indicate legitimacy
+  if (m.email) score += 10;
+  if (m.isCOD) score += 20;
+
   return Math.min(score, 100);
 }
 
 export function computeReliabilityScore(m: any): number {
   let score = 0;
-  if (m.phone) score += 30;
-  if (m.physicalAddress) score += 40;
-  if (m.dulNumber) score += 30;
+  if (m.phone) score += 35;
+  if (m.physicalAddress) score += 30;
+  if (m.dulNumber) score += 25;
+  // Email and social as secondary reliability signals
+  if (m.email) score += 10;
+  if (!m.phone && (m.whatsapp || m.telegramHandle)) score += 10;
   return Math.min(score, 100);
 }
 
 export function computeComplianceScore(m: any): number {
   let score = 0;
-  if (m.dulNumber) score += 70;
-  if (m.physicalAddress) score += 30;
+  if (m.dulNumber) score += 60;
+  if (m.physicalAddress) score += 25;
+  if (m.phone) score += 10;
+  if (m.email) score += 5;
   return Math.min(score, 100);
 }
 
@@ -179,4 +199,49 @@ export function calculateMyFatoorahOffer(m: any, risk: any, revenue: any): MyFat
     offerReason,
     isEligible: true
   };
+}
+
+// Estimate monthly GMV from observable signals (followers, platform, category).
+// Returns { monthly, annual, basis } — basis is shown in the UI as the heuristic label.
+export function estimateRevenue(m: {
+  followers?: number | null;
+  platform?: string;
+  category?: string;
+  isCOD?: boolean;
+}): { monthly: number; annual: number; basis: string } {
+  const followers = typeof m.followers === 'number' ? m.followers : 0;
+  const platform = m.platform || 'website';
+  const cat = (m.category || '').toLowerCase();
+
+  // Average order value by category
+  let aov = 150; // AED
+  if (cat.includes('electronics') || cat.includes('gadget')) aov = 600;
+  else if (cat.includes('jewelry') || cat.includes('gold')) aov = 800;
+  else if (cat.includes('perfume') || cat.includes('oud')) aov = 300;
+  else if (cat.includes('fashion') || cat.includes('abaya') || cat.includes('clothing')) aov = 220;
+  else if (cat.includes('food') || cat.includes('restaurant') || cat.includes('cafe')) aov = 80;
+  else if (cat.includes('beauty') || cat.includes('salon') || cat.includes('spa')) aov = 200;
+  else if (cat.includes('home') || cat.includes('decor') || cat.includes('furniture')) aov = 400;
+
+  // Conversion rate % of followers who buy per month
+  let convRate = 0.005; // 0.5% default
+  if (followers > 50000) convRate = 0.003;
+  else if (followers > 10000) convRate = 0.005;
+  else if (followers < 1000 && followers > 0) convRate = 0.012;
+
+  // Platform multiplier (Instagram/TikTok drive more commerce than others)
+  const platformMult = platform === 'instagram' || platform === 'tiktok' ? 1.2
+    : platform === 'facebook' ? 0.9
+    : platform === 'website' ? 1.1
+    : 0.8;
+
+  const monthly = followers > 0
+    ? Math.round(followers * convRate * aov * platformMult / 100) * 100
+    : 0;
+
+  const basis = monthly > 0
+    ? `${followers.toLocaleString()} followers × ${(convRate * 100).toFixed(1)}% CVR × AED ${aov} AOV`
+    : 'Insufficient data';
+
+  return { monthly, annual: monthly * 12, basis };
 }
