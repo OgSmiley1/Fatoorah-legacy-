@@ -500,47 +500,18 @@ async function runHunt(
     }
   }
 
-  // Run InvestInDubai + HERE Geocoding in parallel — both are UAE-only sources
+  // Skip InvestInDubai scraper (too slow/unreliable) — focus on web search + HERE Geocoding
   if (isUAE) {
-    const govSources = await Promise.allSettled([
-      withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
-      withTimeout(
+    logger.debug('investindubai_disabled', { reason: 'using_web_search_instead' });
+
+    // Only try HERE Geocoding if configured
+    try {
+      const hereResults = await Promise.race([
         searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
-        9_000,
-        'here-geocoding'
-      ),
-    ]);
+        new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8_000)),
+      ]);
 
-    if (govSources[0].status === 'fulfilled') {
-      for (const r of govSources[0].value) {
-        const url = `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
-          r.businessName
-        )}`;
-        const existing = urlVotes.get(url);
-        if (existing) {
-          if (!existing.sources.includes('invest-in-dubai')) existing.sources.push('invest-in-dubai');
-          existing.businessName = existing.businessName || r.businessName;
-          existing.dulNumber = existing.dulNumber || r.dulNumber;
-          existing.category = existing.category || r.category;
-        } else {
-          urlVotes.set(url, {
-            url,
-            title: r.businessName,
-            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
-            businessName: r.businessName,
-            category: r.category,
-            dulNumber: r.dulNumber,
-            isInvestInDubai: true,
-            sources: ['invest-in-dubai'],
-          });
-        }
-      }
-    } else {
-      logger.debug('investindubai_skipped', { error: (govSources[0] as any).reason?.message });
-    }
-
-    if (govSources[1].status === 'fulfilled') {
-      for (const p of govSources[1].value) {
+      for (const p of hereResults) {
         const url = p.website || `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(p.displayName)}`;
         const existing = urlVotes.get(url);
         if (existing) {
@@ -556,8 +527,8 @@ async function runHunt(
           });
         }
       }
-    } else {
-      logger.debug('here_geocoding_skipped', { error: (govSources[1] as any).reason?.message });
+    } catch (e) {
+      logger.debug('here_geocoding_skipped', { error: (e as any).message });
     }
   }
 
