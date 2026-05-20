@@ -75,6 +75,19 @@ export function initWhatsAppBot(
 
   console.log('[WhatsApp] Chrome path:', executablePath || 'puppeteer auto-detect');
 
+  // Ensure the LocalAuth session directory exists. Without this, mounting a
+  // volume on Railway at a different path than the configured WA_SESSION_PATH
+  // would crash whatsapp-web.js on first write.
+  try {
+    const fsMod = require('fs');
+    if (sessionPath && !fsMod.existsSync(sessionPath)) {
+      fsMod.mkdirSync(sessionPath, { recursive: true });
+      console.log(`[WhatsApp] created session dir ${sessionPath}`);
+    }
+  } catch (e) {
+    console.error('[WhatsApp] failed to ensure session dir:', e);
+  }
+
   try {
     waClient = new Client({
       authStrategy: new LocalAuth({ dataPath: sessionPath }),

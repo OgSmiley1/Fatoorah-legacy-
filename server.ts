@@ -918,8 +918,32 @@ Respond as JSON: {
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    // Loud, structured startup log — makes Railway / Docker logs immediately
+    // useful when diagnosing "deploy not working".
+    const env = process.env.NODE_ENV || 'development';
+    const haveSecret = Boolean(process.env.SESSION_SECRET);
+    const dbPath = process.env.DB_PATH || './wizard.db';
+    const enableWa = process.env.ENABLE_WHATSAPP === 'true';
+    console.log('========================================');
+    console.log(`[server] listening on 0.0.0.0:${PORT}`);
+    console.log(`[server] NODE_ENV=${env}`);
+    console.log(`[server] DB_PATH=${dbPath}`);
+    console.log(`[server] ENABLE_WHATSAPP=${enableWa}`);
+    console.log(`[server] SESSION_SECRET ${haveSecret ? 'set' : 'NOT SET — using insecure default'}`);
+    console.log(`[server] Healthcheck: GET http://0.0.0.0:${PORT}/api/health`);
+    console.log('========================================');
+    if (env === 'production' && !haveSecret) {
+      console.warn('[server] WARNING: NODE_ENV=production but SESSION_SECRET is not set. Sessions are not secure.');
+    }
   });
 }
 
-startServer();
+startServer().catch((err: any) => {
+  // Without this, an unhandled rejection during boot produces a confusing
+  // "exited with code 1" on Railway with no other context.
+  console.error('========================================');
+  console.error('[server] FATAL: startServer() rejected:');
+  console.error(err && err.stack ? err.stack : err);
+  console.error('========================================');
+  process.exit(1);
+});

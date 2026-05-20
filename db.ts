@@ -4,6 +4,23 @@ import fs from 'fs';
 
 const dbPath = process.env.DB_PATH || path.join(process.cwd(), 'wizard.db');
 
+// Auto-create the parent directory if it doesn't exist. This is the most
+// common Railway deploy failure: user sets DB_PATH=/data/wizard.db expecting
+// the volume mount, but on first boot before the volume is fully ready (or
+// when no volume is attached at all), `/data` doesn't exist and better-sqlite3
+// throws "Cannot open database because the directory does not exist", which
+// crashes the container before the healthcheck can respond.
+try {
+  const dir = path.dirname(dbPath);
+  if (dir && !fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`[db] created missing directory ${dir} for DB_PATH=${dbPath}`);
+  }
+} catch (e) {
+  console.error(`[db] failed to ensure parent directory for ${dbPath}:`, e);
+  // Don't throw — let better-sqlite3 emit its own actionable error below.
+}
+
 function createDatabase() {
   try {
     const database = new Database(dbPath);
