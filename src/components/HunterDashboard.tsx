@@ -203,6 +203,25 @@ export const HunterDashboard: React.FC = () => {
 
   const handleSaveLead = async (merchant: Merchant) => {
     handleUpdateLead(merchant.id, 'NEW');
+
+    // Honour the Telegram "auto-send on save" toggle (TelegramModal stores it
+    // as sw_tg_autosend in localStorage). Until this commit the toggle was
+    // cosmetic — set but never consumed. Now if it's on AND the Telegram
+    // credentials are present, the lead is forwarded to the configured chat.
+    try {
+      if (localStorage.getItem('sw_tg_autosend') === 'true') {
+        const token = localStorage.getItem('sw_tg_token');
+        const chatId = localStorage.getItem('sw_tg_chatid');
+        if (token && chatId) {
+          // Fire-and-forget — failure mustn't block the Save flow.
+          telegramService.sendMessage(token, chatId, merchant).catch((e) => {
+            console.warn('[telegram] auto-send failed for', merchant.businessName, e);
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('[telegram] autoSend check failed:', e);
+    }
   };
 
   const clearAllHistory = () => {

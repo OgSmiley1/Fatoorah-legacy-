@@ -97,8 +97,45 @@ export const PaymentLinkHunter: React.FC<PaymentLinkHunterProps> = ({ onResultsF
               content: `🚀 Hunting for **${action.keywords}** in **${action.location || 'UAE'}**...\n\nLooking for businesses using payment links, email invoicing, and WhatsApp payment requests.`,
               timestamp: Date.now()
             }]);
-            // Trigger actual search through parent
-            onResultsFound([]);
+            // Actually run the hunt — previously this dropped `[]` and never
+            // hit /api/search, so the chat said "hunting…" but no merchants
+            // ever made it to the dashboard.
+            try {
+              const huntRes = await fetch('/api/search', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  keywords: action.keywords,
+                  location: action.location || 'UAE',
+                  maxResults: action.maxResults || 25,
+                  onlyQualified: true,
+                }),
+              });
+              if (huntRes.ok) {
+                const huntData = await huntRes.json();
+                const found: any[] = Array.isArray(huntData.merchants) ? huntData.merchants : [];
+                onResultsFound(found);
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: found.length
+                    ? `✅ Found **${found.length}** payment-link prospects (${huntData.newLeadsCount ?? found.length} new). They're on the dashboard now.`
+                    : `⚠️ Hunt finished but no qualified payment-link prospects came back. Try different keywords or widen the location.`,
+                  timestamp: Date.now()
+                }]);
+              } else {
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: `❌ Hunt failed (HTTP ${huntRes.status}). Check server logs.`,
+                  timestamp: Date.now()
+                }]);
+              }
+            } catch (huntErr: any) {
+              setMessages(prev => [...prev, {
+                role: 'assistant',
+                content: `❌ Hunt failed: ${huntErr?.message || 'network error'}`,
+                timestamp: Date.now()
+              }]);
+            }
           }
         } catch (e) {
           setMessages(prev => [...prev, {
