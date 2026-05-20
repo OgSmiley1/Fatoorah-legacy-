@@ -474,6 +474,9 @@ async function runHunt(
     `${kw} ${location} "order on whatsapp" OR "bank transfer" buy online`,
     `${kw} ${location} instagram shop small business cod contact`,
     `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
+    // Fallback: simple broad searches that are more likely to succeed
+    `${kw} ${location}`,
+    `${location} ${kw} store`,
   ];
 
   // Run all searches in parallel across 7 engines (see webSearch)
@@ -689,6 +692,7 @@ async function runHunt(
   // Persist — filter out dupes, cap at maxResults
   const finalMerchants: any[] = [];
   let newLeadsCount = 0;
+  let gatewayFilteredCount = 0;
 
   for (const m of enriched) {
     if (!m) continue;
@@ -696,7 +700,10 @@ async function runHunt(
 
     // MyFatoorah lead filter: skip merchants that already have a gateway.
     // These are not onboardable prospects for a payment-gateway sales pitch.
-    if (onlyQualified && (m as any).hasGateway) continue;
+    if (onlyQualified && (m as any).hasGateway) {
+      gatewayFilteredCount++;
+      continue;
+    }
 
     const dupCheck = checkDuplicate(m);
     if (dupCheck.isDuplicate) continue;
@@ -800,6 +807,48 @@ async function runHunt(
     }
   }
 
+  // If we got no results, try database fallback
+  if (finalMerchants.length === 0 && enriched.length === 0) {
+    logger.info('hunt_db_fallback', { runId, keyword: kw, location });
+    try {
+      // Try to find merchants in the database matching the keywords
+      const dbMerchants = db.prepare(`
+        SELECT * FROM merchants
+        WHERE (business_name LIKE ? OR category LIKE ?)
+        AND (country LIKE ? OR city LIKE ?)
+        ORDER BY confidence_score DESC, followers DESC
+        LIMIT ?
+      `).all(`%${kw.split(' ')[0]}%`, `%${kw.split(' ')[0]}%`, `%${location}%`, `%${location}%`, maxResults) as any[];
+
+      for (const dbM of dbMerchants) {
+        if (finalMerchants.length >= maxResults) break;
+        if (!onlyQualified || !dbM.payment_gateway) {
+          finalMerchants.push({
+            id: dbM.id,
+            businessName: dbM.business_name,
+            platform: dbM.source_platform || 'website',
+            url: dbM.source_url,
+            website: dbM.website,
+            phone: dbM.phone,
+            email: dbM.email,
+            whatsapp: dbM.whatsapp,
+            instagramHandle: dbM.instagram_handle,
+            status: 'NEW',
+            fitScore: dbM.myfatoorah_fit_score || 50,
+            contactScore: dbM.contactability_score || 50,
+            confidenceScore: dbM.confidence_score || 40,
+            qualityScore: dbM.quality_score || 40,
+            reliabilityScore: dbM.reliability_score || 40,
+            complianceScore: dbM.compliance_score || 40,
+          });
+          newLeadsCount++;
+        }
+      }
+    } catch (e) {
+      logger.debug('hunt_db_fallback_failed', { error: (e as any).message });
+    }
+  }
+
   db.prepare(
     `INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status) VALUES (?, ?, ?, ?, ?, ?)`
   ).run(
@@ -811,6 +860,6 @@ async function runHunt(
     'COMPLETED'
   );
 
-  logger.info('hunt_completed', { runId, newLeadsCount, finalCount: finalMerchants.length });
+  logger.info('hunt_completed', { runId, newLeadsCount, finalCount: finalMerchants.length, gatewayFiltered: gatewayFilteredCount });
   return { runId, merchants: finalMerchants, newLeadsCount };
 }
