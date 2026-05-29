@@ -88,6 +88,7 @@ export interface Merchant {
   hasGateway?: boolean;
   mfReady?: boolean;
   paymentGateway?: string;
+  paymentMethods?: string[];
   fitScore: number | null;
   contactScore: number | null;
   confidenceScore: number | null;
@@ -145,6 +146,7 @@ export interface SearchParams {
   riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH' | 'ALL';
   minFollowers?: number;
   onlyQualified?: boolean;
+  hunterType?: 'payment_link' | 'pos';
   platforms?: {
     instagram: boolean;
     facebook: boolean;

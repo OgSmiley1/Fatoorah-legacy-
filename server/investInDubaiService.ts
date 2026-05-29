@@ -47,12 +47,12 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
   const page = await context.newPage();
 
   try {
-    const maxRetries = 2;
+    const maxRetries = 1;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         if (attempt > 0) {
           logger.info('invest_in_dubai_retry_attempt', { query, attempt });
-          await page.waitForTimeout(2000 * attempt);
+          await page.waitForTimeout(500 * attempt);
         }
 
         const targetUrl = 'https://investindubai.gov.ae/en/business-directory';
@@ -104,7 +104,7 @@ export async function scrapeInvestInDubai(query: string, maxResults: number = 20
         }
 
         try {
-          await page.waitForSelector('.dul-search-card', { timeout: 60000 });
+          await page.waitForSelector('.dul-search-card', { timeout: 5000 });
         } catch (e) {
           const noResults = await page.isVisible('.no-results-message') || await page.isVisible('text=No results');
           if (noResults) {

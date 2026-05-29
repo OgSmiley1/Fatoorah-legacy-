@@ -138,11 +138,11 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                   MyFatoorah-ready
                 </span>
               )}
-              {merchant.hasGateway && (
-                <span className="bg-slate-700/40 text-slate-300 text-[9px] font-bold px-2 py-0.5 rounded-full border border-slate-600 uppercase tracking-wider">
-                  Has gateway
+              {merchant.hasGateway ? (
+                <span className="bg-rose-500/10 text-rose-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-rose-500/20 uppercase tracking-wider flex items-center gap-1">
+                  ⚡ Has Gateway
                 </span>
-              )}
+              ) : merchant.mfReady ? null : null}
             </div>
             <div className="flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1">
@@ -154,7 +154,7 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
-                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers != null ? merchant.followers.toLocaleString() : 'Not sourced'} followers
+                <TrendingUp size={12} className="text-emerald-400" /> {merchant.followers != null ? `${merchant.followers.toLocaleString()} followers` : 'Followers unknown'}
               </span>
               {merchant.dulNumber && (
                 <>
@@ -247,6 +247,40 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
             </div>
           </div>
         )}
+
+        {/* Payment Gateway Status */}
+        <div className="mb-4">
+          {merchant.hasGateway ? (
+            <div className="flex items-center gap-2 bg-rose-500/5 border border-rose-500/20 rounded-xl px-3 py-2">
+              <span className="text-rose-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <Zap size={11} className="text-rose-400" /> Payment Gateway Detected
+              </span>
+              <div className="flex flex-wrap gap-1 ml-1">
+                {(merchant.paymentMethods && merchant.paymentMethods.length > 0
+                  ? merchant.paymentMethods
+                  : merchant.paymentGateway ? [merchant.paymentGateway] : ['Unknown']
+                ).map((gw, i) => (
+                  <span key={i} className="bg-rose-500/10 text-rose-300 text-[9px] font-bold px-2 py-0.5 rounded-full border border-rose-500/25 uppercase">
+                    {gw}
+                  </span>
+                ))}
+              </div>
+              <span className="ml-auto text-[8px] text-rose-400/60 uppercase font-bold">Not a cold lead</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 bg-emerald-500/5 border border-emerald-500/20 rounded-xl px-3 py-2">
+              <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <CheckCircle2 size={11} className="text-emerald-400" /> No Gateway Detected
+              </span>
+              <span className="text-[9px] text-emerald-300/70 font-bold uppercase ml-1">— Open for MyFatoorah</span>
+              {merchant.mfReady && (
+                <span className="ml-auto bg-emerald-500/10 text-emerald-400 text-[8px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/20 uppercase">
+                  MF Ready
+                </span>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Revenue & Pricing */}
         <div className="grid grid-cols-2 gap-3 mb-6">
