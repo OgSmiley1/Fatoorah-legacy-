@@ -416,6 +416,50 @@ async function startServer() {
     res.json(logs);
   });
 
+  // Seed test merchants for demo/testing
+  app.post("/api/seed-merchants", (req, res) => {
+    try {
+      const testMerchants = [
+        { businessName: "Elegant Abayas Dubai", category: "Abayas", phone: "+971501234567", email: "info@abayas.ae", website: "https://abayas-dubai.example.com", instagramHandle: "elegant_abayas" },
+        { businessName: "Luxury Perfumes Store", category: "Perfumes", phone: "+971502345678", email: "sales@perfumes.ae", website: "https://luxury-perfumes.example.com", instagramHandle: "luxury_perfumes_ae" },
+        { businessName: "Fashion Forward Boutique", category: "Fashion", phone: "+971503456789", email: "contact@fashionforward.ae", website: "https://fashion-forward.example.com", instagramHandle: "fashionforward_dxb" },
+        { businessName: "Home Decor Paradise", category: "Home Decor", phone: "+971504567890", email: "hello@homedecor.ae", website: "https://homedecor-paradise.example.com", instagramHandle: "homedecor_paradise" },
+        { businessName: "Beauty & Cosmetics Hub", category: "Beauty", phone: "+971505678901", email: "shop@beautyhub.ae", website: "https://beauty-hub.example.com", instagramHandle: "beauty_cosmetics_hub" },
+        { businessName: "Jewelry Designs Studio", category: "Jewelry", phone: "+971506789012", email: "designs@jewelry.ae", website: "https://jewelry-studio.example.com", instagramHandle: "jewelry_designs_ae" },
+        { businessName: "Electronics Emporium", category: "Electronics", phone: "+971507890123", email: "sales@electronics.ae", website: "https://electronics-emporium.example.com", instagramHandle: "electronics_emporium" },
+        { businessName: "Gourmet Food Market", category: "Food", phone: "+971508901234", email: "info@gourmetfood.ae", website: "https://gourmet-food.example.com", instagramHandle: "gourmet_food_market" },
+      ];
+
+      const { v4: uuidv4 } = await import('uuid');
+      let inserted = 0;
+
+      for (const m of testMerchants) {
+        const id = uuidv4();
+        const normalized = (m.businessName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        try {
+          db.prepare(`
+            INSERT INTO merchants (
+              id, business_name, normalized_name, source_platform, source_url,
+              category, website, phone, email, instagram_handle,
+              confidence_score, myfatoorah_fit_score, country, city
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            id, m.businessName, normalized, 'website', m.website || '',
+            m.category, m.website || '', m.phone || '', m.email || '', m.instagramHandle || '',
+            70, 75, 'United Arab Emirates', 'Dubai'
+          );
+          inserted++;
+        } catch (e) {
+          // Ignore duplicates
+        }
+      }
+
+      res.json({ success: true, inserted, message: `Seeded ${inserted} test merchants` });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // --- AI CHAT (WizardChat) ---
 
   app.post("/api/ai-chat", async (req, res) => {

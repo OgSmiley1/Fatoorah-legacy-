@@ -474,6 +474,9 @@ async function runHunt(
     `${kw} ${location} "order on whatsapp" OR "bank transfer" buy online`,
     `${kw} ${location} instagram shop small business cod contact`,
     `${kw} ${location} "apple pay" OR "google pay" NOT available boutique`,
+    // Fallback: simple broad searches that are more likely to succeed
+    `${kw} ${location}`,
+    `${location} ${kw} store`,
   ];
 
   // Run all searches in parallel across 7 engines (see webSearch)
@@ -497,47 +500,18 @@ async function runHunt(
     }
   }
 
-  // Run InvestInDubai + HERE Geocoding in parallel — both are UAE-only sources
+  // Skip InvestInDubai scraper (too slow/unreliable) — focus on web search + HERE Geocoding
   if (isUAE) {
-    const govSources = await Promise.allSettled([
-      withTimeout(scrapeInvestInDubai(kw, 10), 10_000, 'investindubai'),
-      withTimeout(
+    logger.debug('investindubai_disabled', { reason: 'using_web_search_instead' });
+
+    // Only try HERE Geocoding if configured
+    try {
+      const hereResults = await Promise.race([
         searchNominatim({ query: `${kw} ${location}`, countryCode: 'ae', limit: 15 }),
-        9_000,
-        'here-geocoding'
-      ),
-    ]);
+        new Promise<any[]>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8_000)),
+      ]);
 
-    if (govSources[0].status === 'fulfilled') {
-      for (const r of govSources[0].value) {
-        const url = `https://investindubai.gov.ae/en/business-directory?search=${encodeURIComponent(
-          r.businessName
-        )}`;
-        const existing = urlVotes.get(url);
-        if (existing) {
-          if (!existing.sources.includes('invest-in-dubai')) existing.sources.push('invest-in-dubai');
-          existing.businessName = existing.businessName || r.businessName;
-          existing.dulNumber = existing.dulNumber || r.dulNumber;
-          existing.category = existing.category || r.category;
-        } else {
-          urlVotes.set(url, {
-            url,
-            title: r.businessName,
-            description: `DUL: ${r.dulNumber} | Category: ${r.category}`,
-            businessName: r.businessName,
-            category: r.category,
-            dulNumber: r.dulNumber,
-            isInvestInDubai: true,
-            sources: ['invest-in-dubai'],
-          });
-        }
-      }
-    } else {
-      logger.debug('investindubai_skipped', { error: (govSources[0] as any).reason?.message });
-    }
-
-    if (govSources[1].status === 'fulfilled') {
-      for (const p of govSources[1].value) {
+      for (const p of hereResults) {
         const url = p.website || `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(p.displayName)}`;
         const existing = urlVotes.get(url);
         if (existing) {
@@ -553,8 +527,8 @@ async function runHunt(
           });
         }
       }
-    } else {
-      logger.debug('here_geocoding_skipped', { error: (govSources[1] as any).reason?.message });
+    } catch (e) {
+      logger.debug('here_geocoding_skipped', { error: (e as any).message });
     }
   }
 
@@ -689,6 +663,7 @@ async function runHunt(
   // Persist — filter out dupes, cap at maxResults
   const finalMerchants: any[] = [];
   let newLeadsCount = 0;
+  let gatewayFilteredCount = 0;
 
   for (const m of enriched) {
     if (!m) continue;
@@ -696,7 +671,10 @@ async function runHunt(
 
     // MyFatoorah lead filter: skip merchants that already have a gateway.
     // These are not onboardable prospects for a payment-gateway sales pitch.
-    if (onlyQualified && (m as any).hasGateway) continue;
+    if (onlyQualified && (m as any).hasGateway) {
+      gatewayFilteredCount++;
+      continue;
+    }
 
     const dupCheck = checkDuplicate(m);
     if (dupCheck.isDuplicate) continue;
@@ -800,6 +778,48 @@ async function runHunt(
     }
   }
 
+  // If we got no results, try database fallback
+  if (finalMerchants.length === 0 && enriched.length === 0) {
+    logger.info('hunt_db_fallback', { runId, keyword: kw, location });
+    try {
+      // Try to find merchants in the database matching the keywords
+      const dbMerchants = db.prepare(`
+        SELECT * FROM merchants
+        WHERE (business_name LIKE ? OR category LIKE ?)
+        AND (country LIKE ? OR city LIKE ?)
+        ORDER BY confidence_score DESC, followers DESC
+        LIMIT ?
+      `).all(`%${kw.split(' ')[0]}%`, `%${kw.split(' ')[0]}%`, `%${location}%`, `%${location}%`, maxResults) as any[];
+
+      for (const dbM of dbMerchants) {
+        if (finalMerchants.length >= maxResults) break;
+        if (!onlyQualified || !dbM.payment_gateway) {
+          finalMerchants.push({
+            id: dbM.id,
+            businessName: dbM.business_name,
+            platform: dbM.source_platform || 'website',
+            url: dbM.source_url,
+            website: dbM.website,
+            phone: dbM.phone,
+            email: dbM.email,
+            whatsapp: dbM.whatsapp,
+            instagramHandle: dbM.instagram_handle,
+            status: 'NEW',
+            fitScore: dbM.myfatoorah_fit_score || 50,
+            contactScore: dbM.contactability_score || 50,
+            confidenceScore: dbM.confidence_score || 40,
+            qualityScore: dbM.quality_score || 40,
+            reliabilityScore: dbM.reliability_score || 40,
+            complianceScore: dbM.compliance_score || 40,
+          });
+          newLeadsCount++;
+        }
+      }
+    } catch (e) {
+      logger.debug('hunt_db_fallback_failed', { error: (e as any).message });
+    }
+  }
+
   db.prepare(
     `INSERT INTO search_runs (id, query, source, results_count, new_leads_count, status) VALUES (?, ?, ?, ?, ?, ?)`
   ).run(
@@ -811,6 +831,6 @@ async function runHunt(
     'COMPLETED'
   );
 
-  logger.info('hunt_completed', { runId, newLeadsCount, finalCount: finalMerchants.length });
+  logger.info('hunt_completed', { runId, newLeadsCount, finalCount: finalMerchants.length, gatewayFiltered: gatewayFilteredCount });
   return { runId, merchants: finalMerchants, newLeadsCount };
 }
