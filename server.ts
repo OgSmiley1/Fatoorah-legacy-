@@ -477,7 +477,7 @@ async function startServer() {
   });
 
   // Seed test merchants for demo/testing
-  app.post("/api/seed-merchants", (req, res) => {
+  app.post("/api/seed-merchants", async (req, res) => {
     try {
       const testMerchants = [
         { businessName: "Elegant Abayas Dubai", category: "Abayas", phone: "+971501234567", email: "info@abayas.ae", website: "https://abayas-dubai.example.com", instagramHandle: "elegant_abayas" },
