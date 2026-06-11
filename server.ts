@@ -296,6 +296,66 @@ async function startServer() {
     res.json(processedLeads);
   });
 
+  // Get merchants with filtering, sorting, and search
+  app.get("/api/merchants", (req, res) => {
+    const { search, sort = 'score', limit = '50', offset = '0', priority, source } = req.query;
+    let query = "SELECT * FROM merchants WHERE 1=1";
+    const params: any[] = [];
+
+    if (search) {
+      query += " AND (business_name LIKE ? OR category LIKE ?)";
+      params.push(`%${search}%`, `%${search}%`);
+    }
+
+    if (priority) {
+      query += " AND priority = ?";
+      params.push(priority);
+    }
+
+    if (source) {
+      query += " AND source = ?";
+      params.push(source);
+    }
+
+    // Sort by score descending by default
+    if (sort === 'score') {
+      query += " ORDER BY score DESC, created_at DESC";
+    } else if (sort === 'priority') {
+      query += " ORDER BY CASE WHEN priority='HOT' THEN 0 WHEN priority='WARM' THEN 1 WHEN priority='COLD' THEN 2 ELSE 3 END, score DESC";
+    } else if (sort === 'recent') {
+      query += " ORDER BY created_at DESC";
+    }
+
+    query += ` LIMIT ${parseInt(limit as string, 10) || 50} OFFSET ${parseInt(offset as string, 10) || 0}`;
+
+    const merchants = db.prepare(query).all(...params) as any[];
+    res.json({ merchants, total: merchants.length });
+  });
+
+  // Update merchant (for proposal builder)
+  app.patch("/api/merchants/:id", (req, res) => {
+    const { id } = req.params;
+    const { expected_volume_aed, setup_fee, owner, notes } = req.body;
+
+    const updates: string[] = [];
+    const params: any[] = [];
+
+    if (expected_volume_aed !== undefined) { updates.push("estimated_revenue = ?"); params.push(expected_volume_aed); }
+    if (setup_fee !== undefined) { updates.push("setup_fee = ?"); params.push(setup_fee); }
+    if (owner !== undefined) { updates.push("owner = ?"); params.push(owner); }
+    if (notes !== undefined) { updates.push("notes = ?"); params.push(notes); }
+
+    if (updates.length === 0) return res.status(400).json({ error: "No fields to update" });
+
+    updates.push("last_validated = CURRENT_TIMESTAMP");
+
+    const sql = `UPDATE merchants SET ${updates.join(", ")} WHERE id = ?`;
+    params.push(id);
+
+    db.prepare(sql).run(...params);
+    res.json({ success: true });
+  });
+
   app.patch("/api/leads/:id", (req, res) => {
     const { id } = req.params;
     const { status, notes, next_action, follow_up_date, outcome } = req.body;
