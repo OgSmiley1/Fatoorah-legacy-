@@ -8,6 +8,8 @@ import { Merchant, SearchParams, SearchHistory, LeadStatus } from '../types';
 import { geminiService } from '../services/geminiService';
 import { MerchantCard } from './MerchantCard';
 import { PipelineView } from './PipelineView';
+import { CRMModal } from './CRMModal';
+import { ProposalBuilder } from './ProposalBuilder';
 import { exportMerchantsToExcel } from '../utils/exportExcel';
 import { TelegramModal } from './TelegramModal';
 import { WhatsAppModal } from './WhatsAppModal';
@@ -86,7 +88,10 @@ export const HunterDashboard: React.FC = () => {
   const [showCardScanner, setShowCardScanner] = React.useState(false);
   const [showPaymentLinkHunter, setShowPaymentLinkHunter] = React.useState(false);
   const [showPOSHunter, setShowPOSHunter] = React.useState(false);
-  const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline'>('hunt');
+  const [showProposalBuilder, setShowProposalBuilder] = React.useState(false);
+  const [showCRMModal, setShowCRMModal] = React.useState(false);
+  const [selectedMerchantForCRM, setSelectedMerchantForCRM] = React.useState<Merchant | null>(null);
+  const [activeTab, setActiveTab] = React.useState<'hunt' | 'pipeline' | 'proposal'>('hunt');
   const [tgStatus, setTgStatus] = React.useState<'idle' | 'sending' | 'success' | 'error'>('idle');
   const socketRef = React.useRef<Socket | null>(null);
   
@@ -475,7 +480,7 @@ export const HunterDashboard: React.FC = () => {
               >
                 Lead Hunter
               </button>
-              <button 
+              <button
                 onClick={() => setActiveTab('pipeline')}
                 className={cn(
                   "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
@@ -483,6 +488,15 @@ export const HunterDashboard: React.FC = () => {
                 )}
               >
                 Sales Pipeline
+              </button>
+              <button
+                onClick={() => setActiveTab('proposal')}
+                className={cn(
+                  "px-4 py-1.5 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all",
+                  activeTab === 'proposal' ? "bg-blue-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+                )}
+              >
+                📋 Proposal Builder
               </button>
             </div>
 
@@ -551,6 +565,9 @@ export const HunterDashboard: React.FC = () => {
                       merchant={merchant}
                       onSave={handleSaveLead}
                       isSaved={savedLeads.some(l => l.id === merchant.id)}
+                      onGenerateProposal={(m) => {
+                        setShowProposalBuilder(true);
+                      }}
                     />
                   ))}
                 </AnimatePresence>
@@ -579,8 +596,10 @@ export const HunterDashboard: React.FC = () => {
               </div>
             )}
           </>
-        ) : (
+        ) : activeTab === 'pipeline' ? (
           <PipelineView />
+        ) : (
+          <ProposalBuilder />
         )}
       </div>
     </main>
@@ -716,6 +735,27 @@ export const HunterDashboard: React.FC = () => {
           />
         )}
       </AnimatePresence>
+
+      {/* CRM Modal */}
+      {selectedMerchantForCRM && (
+        <CRMModal
+          merchant={selectedMerchantForCRM}
+          isOpen={showCRMModal}
+          onClose={() => setShowCRMModal(false)}
+          onSave={async (data) => {
+            try {
+              await fetch(`/api/leads/${selectedMerchantForCRM.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+              });
+              refreshStats();
+            } catch (error) {
+              console.error('Failed to save CRM data:', error);
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

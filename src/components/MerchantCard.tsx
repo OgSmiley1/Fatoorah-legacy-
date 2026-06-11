@@ -16,19 +16,21 @@ function cn(...inputs: ClassValue[]) {
 }
 
 interface MerchantCardProps {
-  merchant: Merchant;
+  merchant: Merchant & { score?: number; priority?: string; scoreBreakdown?: any };
   onSave?: (merchant: Merchant) => void;
   isSaved?: boolean;
   showStatus?: boolean;
   onStatusChange?: (id: string, status: any) => void;
+  onGenerateProposal?: (merchant: Merchant) => void;
 }
 
-export const MerchantCard: React.FC<MerchantCardProps> = ({ 
-  merchant, 
-  onSave, 
+export const MerchantCard: React.FC<MerchantCardProps> = ({
+  merchant,
+  onSave,
   isSaved,
   showStatus,
-  onStatusChange
+  onStatusChange,
+  onGenerateProposal
 }) => {
   const [showScripts, setShowScripts] = React.useState(false);
   const [copied, setCopied] = React.useState<string | null>(null);
@@ -123,6 +125,17 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               <h3 className="text-xl font-bold text-slate-100 truncate">
                 {merchant.businessName}
               </h3>
+              {/* Priority Badge */}
+              {merchant.priority && (
+                <span className={`text-sm font-bold px-3 py-0.5 rounded-full border ${
+                  merchant.priority === 'HOT' ? 'bg-red-500/20 text-red-300 border-red-500/40' :
+                  merchant.priority === 'WARM' ? 'bg-orange-500/20 text-orange-300 border-orange-500/40' :
+                  merchant.priority === 'COLD' ? 'bg-blue-500/20 text-blue-300 border-blue-500/40' :
+                  'bg-gray-500/20 text-gray-300 border-gray-500/40'
+                }`}>
+                  {merchant.priority === 'HOT' && '🔥'} {merchant.priority === 'WARM' && '⚡'} {merchant.priority === 'COLD' && '💫'} {merchant.priority}
+                </span>
+              )}
               {merchant.status === 'DUPLICATE' && (
                 <span className="bg-slate-800 text-slate-400 text-[9px] font-bold px-2 py-0.5 rounded-full border border-slate-700 uppercase">
                   Duplicate
@@ -212,6 +225,31 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
               )}
             </div>
         </div>
+
+        {/* Excel Score & Breakdown */}
+        {merchant.score !== undefined && (
+          <div className="mb-4 p-3 rounded-xl border border-slate-800/50 bg-slate-950/50">
+            <div className="flex items-center justify-between mb-2">
+              <p className="mission-control-label text-sm">Lead Score</p>
+              <p className={cn(
+                "text-2xl font-bold",
+                merchant.score >= 70 ? "text-red-400" :
+                merchant.score >= 50 ? "text-orange-400" :
+                "text-blue-400"
+              )}>
+                {merchant.score}/100
+              </p>
+            </div>
+            {merchant.scoreBreakdown && (
+              <div className="grid grid-cols-2 gap-2 text-xs text-slate-400">
+                <span>No Gateway: <strong className="text-slate-200">+{merchant.scoreBreakdown.no_gateway_or_cod}</strong></span>
+                <span>WhatsApp/IG: <strong className="text-slate-200">+{merchant.scoreBreakdown.whatsapp_ig_selling}</strong></span>
+                <span>Phone: <strong className="text-slate-200">+{merchant.scoreBreakdown.phone_exists}</strong></span>
+                <span>Email: <strong className="text-slate-200">+{merchant.scoreBreakdown.email_exists}</strong></span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Qualification Scores */}
         <div className="grid grid-cols-3 gap-3 mb-4">
@@ -475,6 +513,15 @@ export const MerchantCard: React.FC<MerchantCardProps> = ({
                 {isSaved ? <CheckCircle2 size={14} /> : <Save size={14} />}
                 <span>{isSaved ? "Saved" : "Save Lead"}</span>
               </button>
+              {onGenerateProposal && (
+                <button
+                  onClick={() => onGenerateProposal(merchant)}
+                  className="flex-1 mission-control-button mission-control-button-secondary text-[10px]"
+                  title="Generate Proposal"
+                >
+                  📋 Proposal
+                </button>
+              )}
             </>
           )}
           
