@@ -65,24 +65,27 @@ describe('Merchant Truth Engine', () => {
   });
 
   it('filters sales-ready merchants and removes garbage', () => {
-    const ready = filterSalesReady([
-      {
-        businessName: 'How to Start E-commerce UAE',
-        url: 'https://example.com/guide',
-        snippet: 'A guide about ecommerce',
-        contentType: 'article',
-      },
-      {
-        businessName: 'Dubai Perfume House',
-        category: 'Luxury perfume oud delivery',
-        website: 'https://dubaiperfume.ae',
-        phone: '+971551112233',
-        physicalAddress: 'Dubai, UAE',
-        verifiedSources: ['website', 'here-geocoding', 'serpapi'],
-        snippet: 'DM to order. Worldwide shipping. Bank transfer accepted.',
-        hasGateway: false,
-      },
-    ]);
+    const ready = filterSalesReady(
+      [
+        {
+          businessName: 'How to Start E-commerce UAE',
+          url: 'https://example.com/guide',
+          snippet: 'A guide about ecommerce',
+          contentType: 'article',
+        },
+        {
+          businessName: 'Dubai Perfume House',
+          category: 'Luxury perfume oud delivery',
+          website: 'https://dubaiperfume.ae',
+          phone: '+971551112233',
+          physicalAddress: 'Dubai, UAE',
+          verifiedSources: ['website', 'here-geocoding', 'serpapi'],
+          snippet: 'DM to order. Worldwide shipping. Bank transfer accepted.',
+          hasGateway: false,
+        },
+      ],
+      { includeReview: true }
+    );
 
     expect(ready).toHaveLength(1);
     expect(ready[0].businessName).toBe('Dubai Perfume House');
