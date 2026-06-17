@@ -89,6 +89,14 @@ db.exec(`
     first_contact_at TEXT,
     last_contact_at TEXT,
     outcome TEXT,
+    proposal_status TEXT DEFAULT 'Not Sent',
+    contacted_date TEXT,
+    last_followup TEXT,
+    next_followup TEXT,
+    followup_count INTEGER DEFAULT 0,
+    owner TEXT,
+    expected_volume_aed INTEGER,
+    expected_mf_revenue REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (merchant_id) REFERENCES merchants(id)
@@ -165,7 +173,14 @@ const migrations = [
   { name: 'source_count', type: 'INTEGER DEFAULT 1' },
   { name: 'source_list', type: 'TEXT' },
   { name: 'followers', type: 'INTEGER' },
-  { name: 'canonical_id', type: 'TEXT' }
+  { name: 'canonical_id', type: 'TEXT' },
+  // CRM Pipeline fields
+  { name: 'score', type: 'INTEGER DEFAULT 0' },
+  { name: 'priority', type: 'TEXT DEFAULT "LOW"' },
+  { name: 'sell_channel', type: 'TEXT' },
+  { name: 'has_gateway', type: 'INTEGER DEFAULT 0' },
+  { name: 'emirate', type: 'TEXT' },
+  { name: 'source', type: 'TEXT DEFAULT "web_search"' }
 ];
 
 for (const col of migrations) {
@@ -175,6 +190,32 @@ for (const col of migrations) {
       console.log(`Migration: Added column ${col.name} to merchants table`);
     } catch (e) {
       console.error(`Migration failed for ${col.name}:`, e);
+    }
+  }
+}
+
+// Leads table migrations
+const leadsTableInfo = db.prepare("PRAGMA table_info(leads)").all() as any[];
+const leadsColumnNames = leadsTableInfo.map(c => c.name);
+
+const leadsMigrations = [
+  { name: 'proposal_status', type: 'TEXT DEFAULT "Not Sent"' },
+  { name: 'contacted_date', type: 'TEXT' },
+  { name: 'last_followup', type: 'TEXT' },
+  { name: 'next_followup', type: 'TEXT' },
+  { name: 'followup_count', type: 'INTEGER DEFAULT 0' },
+  { name: 'owner', type: 'TEXT' },
+  { name: 'expected_volume_aed', type: 'INTEGER' },
+  { name: 'expected_mf_revenue', type: 'REAL' }
+];
+
+for (const col of leadsMigrations) {
+  if (!leadsColumnNames.includes(col.name)) {
+    try {
+      db.exec(`ALTER TABLE leads ADD COLUMN ${col.name} ${col.type}`);
+      console.log(`Migration: Added column ${col.name} to leads table`);
+    } catch (e) {
+      console.error(`Migration failed for leads.${col.name}:`, e);
     }
   }
 }

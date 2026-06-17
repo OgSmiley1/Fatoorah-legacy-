@@ -13,6 +13,7 @@ import {
 } from './scoringService';
 import { logger } from './logger';
 import { scrapeInvestInDubai } from './investInDubaiService';
+import { scoreLeadExcelFormula } from './excelScoringService';
 import {
   type SearchResult,
   decodeHtml,
@@ -713,6 +714,14 @@ async function runHunt(
     // This is the signal a sales rep acts on.
     const mfReady = !hasGateway && Boolean(m.phone || m.whatsapp || m.email);
 
+    // Excel formula scoring for lead priority
+    const excelScore = scoreLeadExcelFormula({
+      ...m,
+      has_gateway: hasGateway,
+      isCOD: isCod,
+      followers: m.followers || 0,
+    });
+
     const metadata = {
       risk: {
         score: 20,
@@ -760,6 +769,9 @@ async function runHunt(
       complianceScore,
       contactValidation,
       metadata,
+      score: excelScore.score,
+      priority: excelScore.priority,
+      source: 'web_search',
     });
 
     if (persisted.ok) {
@@ -772,6 +784,9 @@ async function runHunt(
         confidenceScore,
         contactScore,
         fitScore: adjustedFitScore,
+        score: excelScore.score,
+        priority: excelScore.priority,
+        scoreBreakdown: excelScore.breakdown,
         ...metadata,
       });
       onProgress?.(finalMerchants.length, 'saving');
